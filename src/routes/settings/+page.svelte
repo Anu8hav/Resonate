@@ -1,11 +1,34 @@
 <script lang="ts">
   import { serverConfig, settingsState } from '$lib/stores/server';
+  import { pickAndScanFolder } from '$lib/stores/library';
+  import type { ScanSummary } from '$lib/stores/types';
   import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-  import { RefreshCw } from 'lucide-svelte';
+  import { RefreshCw, FolderOpen, Loader2 } from 'lucide-svelte';
 
   // Sub-nav state for settings context
-  type SettingsTab = 'server';
+  type SettingsTab = 'server' | 'library';
   let activeSettingsTab: SettingsTab = 'server';
+
+  // Library scan state
+  let isScanning = false;
+  let lastScanSummary: ScanSummary | null = null;
+  let scanError: string | null = null;
+
+  async function handleScanFolder() {
+    isScanning = true;
+    scanError = null;
+    lastScanSummary = null;
+    try {
+      const summary = await pickAndScanFolder();
+      if (summary) {
+        lastScanSummary = summary;
+      }
+    } catch (err) {
+      scanError = String(err);
+    } finally {
+      isScanning = false;
+    }
+  }
 
   function handleTranscodeToggle(e: CustomEvent<boolean>) {
     settingsState.update((s) => ({ ...s, transcodeFLACToOpus: e.detail }));
@@ -26,11 +49,13 @@
 
   <!-- Sub-nav -->
   <div class="sub-nav">
-    <button class="sub-nav-item active">Server Settings</button>
-    <button class="sub-nav-item">Library</button>
+    <button class="sub-nav-item" class:active={activeSettingsTab === 'server'} on:click={() => activeSettingsTab = 'server'}>Server Settings</button>
+    <button class="sub-nav-item" class:active={activeSettingsTab === 'library'} on:click={() => activeSettingsTab = 'library'}>Library</button>
     <button class="sub-nav-item">Playlists</button>
     <button class="sub-nav-item">Artists</button>
   </div>
+
+  {#if activeSettingsTab === 'server'}
 
   <!-- Panel: Connection Details -->
   <div class="panel">
@@ -146,6 +171,40 @@
       <span class="cache-label">{$settingsState.cacheUsedGB.toFixed(1)} GB / {$settingsState.cacheTotalGB.toFixed(1)} GB</span>
     </div>
   </div>
+  {/if}
+
+  {#if activeSettingsTab === 'library'}
+  <div class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Local Library</h2>
+    </div>
+
+    <div class="field-group" style="align-items: flex-start;">
+      <button class="resync-btn" on:click={handleScanFolder} disabled={isScanning}>
+        {#if isScanning}
+          <Loader2 size={14} class="spin" />
+          <span>Scanning...</span>
+        {:else}
+          <FolderOpen size={14} />
+          <span>Add Music Folder</span>
+        {/if}
+      </button>
+
+      {#if scanError}
+        <div class="scan-error">{scanError}</div>
+      {/if}
+
+      {#if lastScanSummary}
+        <div class="scan-summary">
+          Scanned {lastScanSummary.tracksFound} tracks across {lastScanSummary.albumsFound} albums. 
+          {#if lastScanSummary.tracksSkipped > 0}
+            ({lastScanSummary.tracksSkipped} tracks skipped)
+          {/if}
+        </div>
+      {/if}
+    </div>
+  </div>
+  {/if}
 </div>
 
 <style>
@@ -456,5 +515,25 @@
     line-height: var(--font-mono-data-line-height);
     font-weight: var(--font-mono-data-weight);
     color: var(--color-on-surface-variant);
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  :global(.spin) {
+    animation: spin 1s linear infinite;
+  }
+  .scan-error {
+    color: var(--color-error, #cf6679);
+    font-family: var(--font-body-sm-family);
+    font-size: var(--font-body-sm-size);
+    margin-top: var(--space-2);
+  }
+  .scan-summary {
+    color: var(--color-on-surface-variant);
+    font-family: var(--font-body-sm-family);
+    font-size: var(--font-body-sm-size);
+    margin-top: var(--space-2);
   }
 </style>

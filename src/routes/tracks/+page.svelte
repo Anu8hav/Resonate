@@ -10,7 +10,7 @@
         (t) =>
           t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
           t.artist.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          t.album.toLowerCase().includes(searchQuery.toLowerCase())
+          (t.album ?? '').toLowerCase().includes(searchQuery.toLowerCase())
       )
     : $tracks;
 </script>
@@ -62,7 +62,7 @@
                 <span class="title-text" class:bold={isCurrent}>{track.title}</span>
               </td>
               <td class="col-artist">{track.artist}</td>
-              <td class="col-album">{track.album}</td>
+              <td class="col-album">{track.album ?? '—'}</td>
               <td class="col-time">{formatTime(track.durationSeconds)}</td>
             </tr>
           {/each}

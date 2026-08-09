@@ -176,6 +176,18 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
    - Added `--titlebar-height: 32px` to the Layout section.
    - *Why*: Centralizes the titlebar height as a design token so it can be referenced consistently by the layout and any future components that need to account for the titlebar offset.
 
+### Task: Push Project to GitHub
+**Changes Made:**
+1. Initialized git repository in `c:\the vision` with `git init`.
+2. Staged all 80 project files with `git add -A` — `.gitignore` correctly excluded `node_modules/`, `src-tauri/target/`, `.svelte-kit/`, and `build/`.
+3. Configured local git identity (`Anu8hav` / noreply email) since no global git config existed.
+4. Created initial commit with full project state: SvelteKit frontend, Tauri v2 backend, design system, all routes, mock stores, custom window controls.
+5. Renamed default branch from `master` to `main`.
+6. Added remote: `https://github.com/Anu8hav/Resonate.git`
+7. Force-pushed to `origin/main` (remote had a pre-existing commit from repo creation — likely a default README).
+- *Why*: User requested pushing the existing project to a newly created GitHub repository before beginning the Rust backend implementation work.
+- **Repository URL**: https://github.com/Anu8hav/Resonate
+
 ## 8. Current State & Pending Tasks
 - [x] Establish initial project architecture and feature roadmap.
 - [x] Complete UI design system rebuild and layout implementation.
@@ -186,7 +198,16 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
 - [x] **Launch Tauri v2 desktop window with full SvelteKit frontend rendering.**
 - [x] **Fix window controls (minimize/maximize/close) and drag region via Tauri v2 capabilities.**
 - [x] **Reposition window controls to Windows-standard top-right titlebar strip.**
-- [ ] Implement Rust backend for local file scanning and indexing.
-- [ ] Connect SvelteKit frontend to Rust backend via Tauri IPC (`invoke`).
+- [x] **Push project to GitHub** (https://github.com/Anu8hav/Resonate)
+- [x] **Implement Rust backend for local file scanning and indexing.**
+- [x] **Connect SvelteKit frontend to Rust backend via Tauri IPC (`invoke`).**
 - [ ] Implement actual audio playback engine (CPAL/Symphonia via Rust).
 - [ ] Integrate Subsonic API connection for remote streaming.
+
+## 9. Local Library Backend Implementation
+- **Dependencies**: Added `lofty` for metadata extraction, `rusqlite` (bundled) for SQLite, `walkdir` for directory scanning, `uuid` (v4), and `tauri-plugin-dialog` for native folder picking.
+- **Database**: Created `db.rs` to initialize `resonate.db` in `app_data_dir()`. Implemented schema with `artists`, `albums`, `tracks`, and `scan_folders` tables. Included deduplication logic based on `file_path` for tracks and case-insensitive matching for artists and albums.
+- **Scanner**: Created `scanner.rs` to recursively scan directories for `.mp3`, `.flac`, `.wav`, `.m4a`, and `.ogg` files. Uses `lofty` to extract metadata and falls back gracefully for missing tags.
+- **IPC Commands**: Registered `pick_music_folder`, `scan_library`, `get_all_albums`, and `get_all_tracks` commands in `main.rs`. Fixed a compilation error regarding `to_string_lossy` on `tauri_plugin_dialog::FilePath` by using `.into_path().unwrap().to_string_lossy().to_string()`.
+- **Frontend Integration**: Wired `library.ts` to call IPC commands, updated `+layout.svelte` to fetch library on startup, and added an "Add Music Folder" button with a scan summary inside the Settings > Library tab. Made `album` nullable on the `Track` interface and updated `tracks/+page.svelte` to handle null albums gracefully.
+- **Git Push**: Committed all changes and pushed the `feat/local-library-backend` branch to GitHub.

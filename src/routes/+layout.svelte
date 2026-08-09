@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import '$lib/theme/fonts.css';
   import '$lib/theme/tokens.css';
   import Sidebar from '$lib/components/Sidebar.svelte';
@@ -6,6 +7,12 @@
   import NowPlayingExpanded from '$lib/components/NowPlayingExpanded.svelte';
   import WindowControls from '$lib/components/WindowControls.svelte';
   import { isExpandedViewOpen } from '$lib/stores/player';
+  import { refreshLibraryFromBackend } from '$lib/stores/library';
+
+  // Load persisted library from SQLite on app startup
+  onMount(() => {
+    refreshLibraryFromBackend();
+  });
 </script>
 
 <div class="app-shell">

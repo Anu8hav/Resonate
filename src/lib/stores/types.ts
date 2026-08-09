@@ -1,10 +1,8 @@
-/** Resonate — Shared TypeScript interfaces for stores and components */
-
 export interface Track {
   id: string;
   title: string;
   artist: string;
-  album: string;
+  album: string | null;
   durationSeconds: number;
   coverUrl: string | null;
   source: 'local' | 'subsonic';
@@ -55,3 +53,11 @@ export interface Playlist {
   coverUrl: string | null;
   trackIds: string[];
 }
+
+export interface ScanSummary {
+  tracksFound: number;
+  tracksSkipped: number;
+  albumsFound: number;
+  artistsFound: number;
+}
+
