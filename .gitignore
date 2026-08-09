@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+.svelte-kit/
+build/
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# Environment
+.env
+.env.*
+
+# OS
+Thumbs.db
+.DS_Store
