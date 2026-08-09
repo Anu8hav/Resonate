@@ -38,7 +38,8 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
             title TEXT NOT NULL,
             artist_id TEXT NOT NULL,
             cover_path TEXT,
-            FOREIGN KEY (artist_id) REFERENCES artists(id)
+            FOREIGN KEY (artist_id) REFERENCES artists(id),
+            UNIQUE(title, artist_id)
         );
 
         CREATE TABLE IF NOT EXISTS tracks (
@@ -134,22 +135,23 @@ pub fn upsert_track(
     artist_id: &str,
     album_id: Option<&str>,
 ) -> Result<String, String> {
-    // Check if track with this file_path already exists
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM tracks WHERE file_path = ?1",
-            params![track.file_path],
-            |row| row.get(0),
-        )
-        .ok();
+    let new_id = Uuid::new_v4().to_string();
 
-    let id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
-
-    conn.execute(
-        "INSERT OR REPLACE INTO tracks (id, title, artist_id, album_id, duration_seconds, file_path, track_number, format, bitrate, sample_rate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    let id: String = conn.query_row(
+        "INSERT INTO tracks (id, title, artist_id, album_id, duration_seconds, file_path, track_number, format, bitrate, sample_rate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(file_path) DO UPDATE SET
+            title = excluded.title,
+            artist_id = excluded.artist_id,
+            album_id = excluded.album_id,
+            duration_seconds = excluded.duration_seconds,
+            track_number = excluded.track_number,
+            format = excluded.format,
+            bitrate = excluded.bitrate,
+            sample_rate = excluded.sample_rate
+         RETURNING id",
         params![
-            id,
+            new_id,
             track.title,
             artist_id,
             album_id,
@@ -160,10 +162,53 @@ pub fn upsert_track(
             track.bitrate,
             track.sample_rate,
         ],
+        |row| row.get(0)
     )
     .map_err(|e| format!("Failed to upsert track '{}': {}", track.title, e))?;
 
     Ok(id)
+}
+
+/// Delete tracks that belong to `folder_path` but are not in `kept_file_paths`.
+pub fn delete_missing_tracks(
+    conn: &Connection,
+    folder_path: &str,
+    kept_file_paths: &std::collections::HashSet<String>,
+) -> Result<u32, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, file_path FROM tracks")
+        .map_err(|e| format!("Failed to prepare track deletion query: {}", e))?;
+
+    let mut to_delete = Vec::new();
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let file_path: String = row.get(1)?;
+            Ok((id, file_path))
+        })
+        .map_err(|e| format!("Failed to query tracks for deletion: {}", e))?;
+
+    let folder_path_obj = std::path::Path::new(folder_path);
+
+    for row in rows {
+        if let Ok((id, file_path)) = row {
+            let file_path_obj = std::path::Path::new(&file_path);
+            if file_path_obj.starts_with(folder_path_obj) {
+                if !kept_file_paths.contains(&file_path) {
+                    to_delete.push(id);
+                }
+            }
+        }
+    }
+
+    let mut deleted_count = 0;
+    for id in to_delete {
+        conn.execute("DELETE FROM tracks WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete track {}: {}", id, e))?;
+        deleted_count += 1;
+    }
+
+    Ok(deleted_count)
 }
 
 /// Record a scanned folder with the current timestamp.

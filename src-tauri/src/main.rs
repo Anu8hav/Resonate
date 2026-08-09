@@ -39,46 +39,57 @@ async fn scan_library(
     app: tauri::AppHandle,
     folder_path: String,
 ) -> Result<ScanSummary, String> {
-    let path = Path::new(&folder_path);
+    // Run the blocking file system and database operations in a separate thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = Path::new(&folder_path);
 
-    // Step 1: Scan the directory for audio files
-    let scan_result = scanner::scan_directory(path)?;
+        // Step 1: Scan the directory for audio files
+        let scan_result = scanner::scan_directory(path)?;
 
-    // Step 2: Persist results to the database
-    let db_state = app.state::<DbState>();
-    let conn = db_state.0.lock().map_err(|e| format!("DB lock error: {}", e))?;
+        // Step 2: Persist results to the database
+        let db_state = app.state::<DbState>();
+        let conn = db_state.0.lock().map_err(|e| format!("DB lock error: {}", e))?;
 
-    let mut albums_seen = std::collections::HashSet::new();
-    let mut artists_seen = std::collections::HashSet::new();
+        let mut albums_seen = std::collections::HashSet::new();
+        let mut artists_seen = std::collections::HashSet::new();
+        let mut kept_file_paths = std::collections::HashSet::new();
 
-    for track in &scan_result.tracks {
-        // Get or create the artist
-        let artist_id = db::get_or_create_artist(&conn, &track.artist)?;
-        artists_seen.insert(artist_id.clone());
+        for track in &scan_result.tracks {
+            // Get or create the artist
+            let artist_id = db::get_or_create_artist(&conn, &track.artist)?;
+            artists_seen.insert(artist_id.clone());
 
-        // Get or create the album (if present)
-        let album_id = match &track.album {
-            Some(album_title) => {
-                let aid = db::get_or_create_album(&conn, album_title, &artist_id)?;
-                albums_seen.insert(aid.clone());
-                Some(aid)
-            }
-            None => None,
-        };
+            // Get or create the album (if present)
+            let album_id = match &track.album {
+                Some(album_title) => {
+                    // Note: This relies on the SELECT logic in get_or_create_album or handles constraint errors.
+                    let aid = db::get_or_create_album(&conn, album_title, &artist_id)?;
+                    albums_seen.insert(aid.clone());
+                    Some(aid)
+                }
+                None => None,
+            };
 
-        // Upsert the track
-        db::upsert_track(&conn, track, &artist_id, album_id.as_deref())?;
-    }
+            // Upsert the track
+            db::upsert_track(&conn, track, &artist_id, album_id.as_deref())?;
+            kept_file_paths.insert(track.file_path.clone());
+        }
 
-    // Record the scan folder
-    db::upsert_scan_folder(&conn, &folder_path)?;
+        // Step 3: Remove missing tracks from this folder
+        db::delete_missing_tracks(&conn, &folder_path, &kept_file_paths)?;
 
-    Ok(ScanSummary {
-        tracks_found: scan_result.tracks.len() as u32,
-        tracks_skipped: scan_result.skipped.len() as u32,
-        albums_found: albums_seen.len() as u32,
-        artists_found: artists_seen.len() as u32,
+        // Step 4: Record the scan folder
+        db::upsert_scan_folder(&conn, &folder_path)?;
+
+        Ok(ScanSummary {
+            tracks_found: scan_result.tracks.len() as u32,
+            tracks_skipped: scan_result.skipped.len() as u32,
+            albums_found: albums_seen.len() as u32,
+            artists_found: artists_seen.len() as u32,
+        })
     })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Query all albums from the local database.
