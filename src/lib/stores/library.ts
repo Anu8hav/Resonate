@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Album, Track, Playlist } from './types';
+import type { Album, Track, Playlist, ScanSummary } from './types';
 
 /* ── Mock Albums ─────────────────────────────────────────────────────── */
 
@@ -72,3 +72,64 @@ export const artists = derived(albums, ($albums) => {
   }
   return Array.from(artistMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 });
+
+/* ── Backend IPC Integration ─────────────────────────────────────────── */
+
+/**
+ * Check if we're running inside Tauri (native window) vs plain browser.
+ * When running `npm run dev` without Tauri, invoke() doesn't exist.
+ */
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/**
+ * Refresh the albums and tracks stores from the SQLite backend.
+ * Falls back silently to existing mock data if not running in Tauri
+ * or if the backend returns an error (e.g. empty DB on first run).
+ */
+export async function refreshLibraryFromBackend(): Promise<void> {
+  if (!isTauri()) return;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const [realAlbums, realTracks] = await Promise.all([
+      invoke<Album[]>('get_all_albums'),
+      invoke<Track[]>('get_all_tracks'),
+    ]);
+
+    // Only replace stores if the backend returned data —
+    // keep mock data as fallback for empty-library first run
+    if (realAlbums.length > 0 || realTracks.length > 0) {
+      albums.set(realAlbums);
+      tracks.set(realTracks);
+    }
+  } catch (err) {
+    console.warn('[library] Failed to refresh from backend, keeping mock data:', err);
+  }
+}
+
+/**
+ * Open a native folder picker, scan the selected folder for audio files,
+ * persist metadata to SQLite, and refresh the frontend stores.
+ * Returns the scan summary or null if the user cancelled the picker.
+ */
+export async function pickAndScanFolder(): Promise<ScanSummary | null> {
+  if (!isTauri()) {
+    console.warn('[library] pickAndScanFolder called outside Tauri — no-op');
+    return null;
+  }
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const folder = await invoke<string | null>('pick_music_folder');
+    if (!folder) return null;
+
+    const summary = await invoke<ScanSummary>('scan_library', { folderPath: folder });
+    await refreshLibraryFromBackend();
+    return summary;
+  } catch (err) {
+    console.error('[library] Scan failed:', err);
+    throw err;
+  }
+}
