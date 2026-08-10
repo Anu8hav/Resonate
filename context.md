@@ -201,7 +201,7 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
 - [x] **Push project to GitHub** (https://github.com/Anu8hav/Resonate)
 - [x] **Implement Rust backend for local file scanning and indexing.**
 - [x] **Connect SvelteKit frontend to Rust backend via Tauri IPC (`invoke`).**
-- [ ] Implement actual audio playback engine (CPAL/Symphonia via Rust).
+- [x] **Implement actual audio playback engine (rodio/symphonia via Rust).**
 - [ ] Integrate Subsonic API connection for remote streaming.
 
 ## 9. Local Library Backend Implementation
@@ -212,3 +212,11 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
 - **Frontend Integration**: Wired `library.ts` to call IPC commands, updated `+layout.svelte` to fetch library on startup, and added an "Add Music Folder" button with a scan summary inside the Settings > Library tab. Made `album` nullable on the `Track` interface and updated `tracks/+page.svelte` to handle null albums gracefully.
 - **Backend Refactor**: Modified `scan_library` to run asynchronously in a non-blocking thread (`tauri::async_runtime::spawn_blocking`). Added missing track cleanup logic during rescans (`delete_missing_tracks`), implemented true atomic upserts for tracks using `ON CONFLICT DO UPDATE`, and added a database `UNIQUE(title, artist_id)` constraint on albums.
 - **Git Merge**: Merged the `feat/local-library-backend` branch into `main` and pushed to GitHub.
+
+## 10. Real Audio Playback Engine
+- **Dependencies**: Added `rodio` with `symphonia-all` features for comprehensive audio format decoding. Also added `tokio` (time features) to handle asynchronous delays.
+- **AudioEngine**: Implemented `src-tauri/src/audio_engine.rs` to manage the audio playback lifecycle. In order to keep the Tauri State thread-safe (`Send + Sync`), the underlying `!Send` cpal `OutputStream` is kept alive in a dedicated parked background thread, while the control handles (`OutputStreamHandle` and `Sink`) remain in the main engine state. It handles play, pause, resume, stop, and volume controls.
+- **Seeking**: Implemented native `try_seek` in rodio (relying on Symphonia). Added a robust fallback mechanism that stops the current sink, re-decodes the file from disk, applies `.skip_duration()` to rapidly fast-forward past decoded frames, and resumes audio on a fresh sink seamlessly if native seek fails.
+- **Track-End & Polling**: A tokenized polling loop (`POLLING_GENERATION`) is spawned when a track begins playing. It polls the engine position every 250ms and emits a `playback-position` event to the Svelte frontend, along with a `track-ended` event when `sink.empty()` goes true.
+- **Frontend IPC (`player.ts`)**: Wired up UI actions like `play()`, `togglePlay()`, `setPosition()`, and `setVolume()` to trigger backend Tauri IPC commands. Added a fallback mock implementation for gracefully surviving in `npm run dev` browser-only testing environments.
+- **Seek Buttons & Queue Integration**: Fixed `skipNext` and `skipPrevious` in `player.ts` to actually iterate through the queue, handling repeat modes and 3-second restart logic. Updated the UI lists (History, Tracks) to pass the current filtered view as the new queue when playing a track. Added global spacebar listener in `+layout.svelte` for play/pause toggling.

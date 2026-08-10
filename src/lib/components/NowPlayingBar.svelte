@@ -9,7 +9,9 @@
     setVolume,
     formatTime,
     playbackState,
-    toggleExpandedView
+    toggleExpandedView,
+    skipNext,
+    skipPrevious
   } from '$lib/stores/player';
   import { SkipBack, SkipForward, Play, Pause, Volume2, VolumeX, Maximize2 } from 'lucide-svelte';
 
@@ -53,7 +55,7 @@
   <!-- Center: Transport Controls + Progress -->
   <div class="transport">
     <div class="transport-buttons">
-      <button class="transport-btn" title="Previous">
+      <button class="transport-btn" title="Previous" on:click={skipPrevious}>
         <SkipBack size={18} />
       </button>
 
@@ -65,7 +67,7 @@
         {/if}
       </button>
 
-      <button class="transport-btn" title="Next">
+      <button class="transport-btn" title="Next" on:click={skipNext}>
         <SkipForward size={18} />
       </button>
     </div>

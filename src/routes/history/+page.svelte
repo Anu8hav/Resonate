@@ -27,7 +27,7 @@
             {@const isCurrent = $currentTrack?.id === track.id}
             <!-- svelte-ignore a11y-click-events-have-key-events -->
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-            <tr class:playing={isCurrent} on:click={() => play(track)}>
+            <tr class:playing={isCurrent} on:click={() => play(track, $history)}>
               <td class="col-icon">
                 {#if isCurrent}
                   <span class="playing-icon"><Volume2 size={14} /></span>
