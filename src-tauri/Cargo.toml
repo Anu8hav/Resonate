@@ -7,6 +7,7 @@ version = "0.1.0"
 description = "A native, open-source music platform"
 authors = ["you"]
 edition = "2021"
+default-run = "project-resonate"
 
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
@@ -21,6 +22,8 @@ lofty = "0.24.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 walkdir = "2.5.0"
 uuid = { version = "1.24.0", features = ["v4"] }
+rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
+tokio = { version = "1.0", features = ["time"] }
 
 
 [profile.release]

@@ -1,5 +1,6 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import type { PlaybackState, Track } from './types';
+import { invoke } from '@tauri-apps/api/core';
 
 const MOCK_TRACK: Track = {
   id: 'trk-1',
@@ -13,11 +14,11 @@ const MOCK_TRACK: Track = {
 };
 
 export const playbackState = writable<PlaybackState>({
-  currentTrack: MOCK_TRACK,
+  currentTrack: null,
   isPlaying: false,
-  positionSeconds: 67,
+  positionSeconds: 0,
   volume: 0.75,
-  queue: [MOCK_TRACK, MOCK_TRACK, MOCK_TRACK], // Mock some queue items for testing
+  queue: [],
   isExpandedViewOpen: false,
   shuffle: false,
   repeat: 'off'
@@ -37,18 +38,52 @@ export const repeat = derived(playbackState, ($s) => $s.repeat);
 export const queue = derived(playbackState, ($s) => $s.queue);
 
 /* Actions */
-export function togglePlay(): void {
-  playbackState.update((s) => ({ ...s, isPlaying: !s.isPlaying }));
+export async function togglePlay(): Promise<void> {
+  const s = get(playbackState);
+  try {
+    if (s.isPlaying) {
+      await invoke('pause_track');
+      playbackState.update((state) => ({ ...state, isPlaying: false }));
+    } else {
+      await invoke('resume_track');
+      playbackState.update((state) => ({ ...state, isPlaying: true }));
+    }
+  } catch (err) {
+    console.warn('Failed to toggle play via Tauri (fallback to mock):', err);
+    playbackState.update((state) => ({ ...state, isPlaying: !state.isPlaying }));
+  }
 }
 
-export function play(track: Track): void {
+export async function play(track: Track, newQueue?: Track[]): Promise<void> {
+  if (track.source === 'local' && track.filePath) {
+    try {
+      const duration = await invoke<number>('play_track', { filePath: track.filePath });
+      playbackState.update((s) => ({
+        ...s,
+        currentTrack: { ...track, durationSeconds: duration },
+        isPlaying: true,
+        positionSeconds: 0,
+        queue: newQueue ?? s.queue
+      }));
+    } catch (err) {
+      console.warn('Failed to play local track via Tauri (fallback to mock):', err);
+      fallbackPlay(track, newQueue);
+    }
+  } else {
+    // Non-local or missing path (e.g., future subsonic)
+    fallbackPlay(track, newQueue);
+  }
+  logToHistory(track);
+}
+
+function fallbackPlay(track: Track, newQueue?: Track[]): void {
   playbackState.update((s) => ({
     ...s,
     currentTrack: track,
     isPlaying: true,
-    positionSeconds: 0
+    positionSeconds: 0,
+    queue: newQueue ?? s.queue
   }));
-  logToHistory(track);
 }
 
 function logToHistory(track: Track): void {
@@ -61,12 +96,25 @@ function logToHistory(track: Track): void {
   });
 }
 
-export function setPosition(seconds: number): void {
-  playbackState.update((s) => ({ ...s, positionSeconds: seconds }));
+export async function setPosition(seconds: number): Promise<void> {
+  try {
+    await invoke('seek_track', { positionSeconds: seconds });
+    playbackState.update((s) => ({ ...s, positionSeconds: seconds }));
+  } catch (err) {
+    console.warn('Seek failed (mock fallback):', err);
+    playbackState.update((s) => ({ ...s, positionSeconds: seconds }));
+  }
 }
 
-export function setVolume(vol: number): void {
-  playbackState.update((s) => ({ ...s, volume: Math.max(0, Math.min(1, vol)) }));
+export async function setVolume(vol: number): Promise<void> {
+  const clamped = Math.max(0, Math.min(1, vol));
+  try {
+    await invoke('set_volume', { volume: clamped });
+    playbackState.update((s) => ({ ...s, volume: clamped }));
+  } catch (err) {
+    console.warn('Volume set failed (mock fallback):', err);
+    playbackState.update((s) => ({ ...s, volume: clamped }));
+  }
 }
 
 export function toggleExpandedView(): void {
@@ -97,11 +145,37 @@ export function toggleLike(trackId: string): void {
 }
 
 export function skipNext(): void {
-  console.log('Mock skip next');
+  const s = get(playbackState);
+  if (s.queue.length === 0) return;
+  
+  const currentIndex = s.queue.findIndex(t => t.id === s.currentTrack?.id);
+  let nextIndex = currentIndex + 1;
+  
+  if (nextIndex >= s.queue.length) {
+    if (s.repeat === 'all') {
+      nextIndex = 0;
+    } else {
+      return; // Stop at end of queue
+    }
+  }
+  
+  play(s.queue[nextIndex]);
 }
 
 export function skipPrevious(): void {
-  console.log('Mock skip previous');
+  const s = get(playbackState);
+  if (s.queue.length === 0) return;
+  
+  const currentIndex = s.queue.findIndex(t => t.id === s.currentTrack?.id);
+  
+  // Restart track if we're past 3 seconds, or if we're at the first track and repeat is off
+  if (s.positionSeconds > 3.0 || (currentIndex <= 0 && s.repeat !== 'all')) {
+    setPosition(0);
+    return;
+  }
+  
+  const prevIndex = currentIndex <= 0 ? s.queue.length - 1 : currentIndex - 1;
+  play(s.queue[prevIndex]);
 }
 
 /** Format seconds to m:ss */

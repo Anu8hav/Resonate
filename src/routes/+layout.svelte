@@ -6,14 +6,42 @@
   import NowPlayingBar from '$lib/components/NowPlayingBar.svelte';
   import NowPlayingExpanded from '$lib/components/NowPlayingExpanded.svelte';
   import WindowControls from '$lib/components/WindowControls.svelte';
-  import { isExpandedViewOpen } from '$lib/stores/player';
+  import { isExpandedViewOpen, playbackState, skipNext, togglePlay } from '$lib/stores/player';
   import { refreshLibraryFromBackend } from '$lib/stores/library';
+  import { listen } from '@tauri-apps/api/event';
 
   // Load persisted library from SQLite on app startup
   onMount(() => {
     refreshLibraryFromBackend();
+
+    // Setup Tauri event listeners for audio playback
+    listen<number>('playback-position', (event) => {
+      playbackState.update(s => ({ ...s, positionSeconds: event.payload }));
+    }).catch(console.warn);
+
+    listen('track-ended', () => {
+      skipNext();
+    }).catch(console.warn);
   });
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.code === 'Space') {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+         activeEl.tagName === 'TEXTAREA' ||
+         activeEl.hasAttribute('contenteditable'))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      togglePlay();
+    }
+  }
 </script>
+
+<svelte:window on:keydown={handleKeydown} />
 
 <div class="app-shell">
   <div class="titlebar" data-tauri-drag-region>
