@@ -113,53 +113,40 @@ impl AudioEngine {
     }
 
     pub fn seek(&mut self, position_seconds: f64) -> Result<(), String> {
-        if let Some(sink) = &mut self.sink {
-            let target_duration = Duration::from_secs_f64(position_seconds);
-            
-            // First, try rodio's native try_seek which relies on the symphonia decoder's seeking
-            match sink.try_seek(target_duration) {
-                Ok(_) => {
-                    self.accumulated_position = position_seconds;
-                    if !sink.is_paused() {
-                        self.play_started_at = Some(Instant::now());
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    eprintln!("[audio_engine] Native try_seek failed: {}, falling back to re-decode", e);
-                }
-            }
+        let path = self.current_track_path.clone()
+            .ok_or("No track loaded")?;
 
-            // Fallback: stop sink, re-decode file, skip_duration (which rapidly consumes decoded samples), append to new sink.
-            let path = self.current_track_path.clone().ok_or("No track path for seek fallback")?;
-            let was_paused = sink.is_paused();
-            let current_vol = sink.volume();
+        // Capture state from the current sink before destroying it
+        let was_playing = self.sink.as_ref().map(|s| !s.is_paused()).unwrap_or(false);
+        let current_vol = self.sink.as_ref().map(|s| s.volume()).unwrap_or(1.0);
 
-            let file = File::open(&path).map_err(|e| format!("Seek fallback open failed: {}", e))?;
-            let reader = BufReader::new(file);
-            let source = Decoder::new(reader).map_err(|e| format!("Seek fallback decode failed: {}", e))?;
-
-            // Apply skip_duration to consume samples up to the target
-            let skipped_source = source.skip_duration(target_duration);
-
-            let new_sink = Sink::try_new(&self.stream_handle).map_err(|e| format!("Seek fallback sink failed: {}", e))?;
-            new_sink.set_volume(current_vol);
-            new_sink.append(skipped_source);
-
-            if was_paused {
-                new_sink.pause();
-            } else {
-                new_sink.play();
-                self.play_started_at = Some(Instant::now());
-            }
-
-            self.sink = Some(new_sink);
-            self.accumulated_position = position_seconds;
-
-            Ok(())
-        } else {
-            Err("No active sink.".into())
+        // Drop the old sink completely — this stops old buffered audio immediately,
+        // eliminating the overlap glitch that try_seek can cause with symphonia decoders
+        if let Some(old_sink) = self.sink.take() {
+            old_sink.stop();
         }
+
+        let file = File::open(&path).map_err(|e| format!("Seek open failed: {}", e))?;
+        let source = Decoder::new(BufReader::new(file))
+            .map_err(|e| format!("Seek decode failed: {}", e))?;
+
+        // Skip decoded samples up to the seek position
+        let skipped = source.skip_duration(Duration::from_secs_f64(position_seconds));
+
+        let new_sink = Sink::try_new(&self.stream_handle)
+            .map_err(|e| format!("Seek sink creation failed: {}", e))?;
+        new_sink.set_volume(current_vol);
+        new_sink.append(skipped);
+
+        if !was_playing {
+            new_sink.pause();
+        }
+
+        self.sink = Some(new_sink);
+        self.accumulated_position = position_seconds;
+        self.play_started_at = if was_playing { Some(Instant::now()) } else { None };
+
+        Ok(())
     }
 
     pub fn get_position(&self) -> Option<f64> {
@@ -175,6 +162,6 @@ impl AudioEngine {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.sink.as_ref().map(|s| s.empty()).unwrap_or(true)
+        self.sink.as_ref().map(|s| s.empty()).unwrap_or(false)
     }
 }

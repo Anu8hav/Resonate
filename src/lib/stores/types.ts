@@ -8,6 +8,11 @@ export interface Track {
   source: 'local' | 'subsonic';
   filePath?: string;
   streamUrl?: string;
+  format?: string;        // e.g. "FLAC", "MP3"
+  bitrate?: number;       // in kbps
+  sampleRate?: number;    // in Hz, e.g. 48000
+  bitDepth?: number;      // e.g. 16, 24 (lossless only)
+  channels?: number;      // e.g. 1 = mono, 2 = stereo
 }
 
 export interface Album {

@@ -13,6 +13,8 @@ pub struct ScannedTrack {
     pub format: String,
     pub bitrate: Option<u32>,
     pub sample_rate: Option<u32>,
+    pub bit_depth: Option<u8>,
+    pub channels: Option<u8>,
 }
 
 /// Result of scanning a directory — successful tracks plus paths of skipped files.
@@ -122,6 +124,8 @@ fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
     let duration_seconds = properties.duration().as_secs() as u32;
     let bitrate = properties.overall_bitrate();
     let sample_rate = properties.sample_rate();
+    let bit_depth = properties.bit_depth();
+    let channels = properties.channels();
 
     let format = format_from_extension(path);
     let file_path = path.to_string_lossy().to_string();
@@ -136,5 +140,7 @@ fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
         format,
         bitrate,
         sample_rate,
+        bit_depth,
+        channels,
     })
 }

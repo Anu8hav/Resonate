@@ -225,16 +225,21 @@ fn stop_track(state: tauri::State<'_, Mutex<Option<AudioEngine>>>) -> Result<(),
 }
 
 #[tauri::command]
-fn seek_track(
+async fn seek_track(
+    app: tauri::AppHandle,
     position_seconds: f64,
-    state: tauri::State<'_, Mutex<Option<AudioEngine>>>,
 ) -> Result<(), String> {
-    let mut engine_opt = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
-    if let Some(engine) = engine_opt.as_mut() {
-        engine.seek(position_seconds)
-    } else {
-        Err("No audio device available.".into())
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<Option<AudioEngine>>>();
+        let mut engine_opt = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+        if let Some(engine) = engine_opt.as_mut() {
+            engine.seek(position_seconds)
+        } else {
+            Err("No audio device available.".into())
+        }
+    })
+    .await
+    .map_err(|e| format!("Seek task failed: {}", e))?
 }
 
 #[tauri::command]

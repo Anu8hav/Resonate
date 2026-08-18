@@ -15,9 +15,25 @@
   } from '$lib/stores/player';
   import { SkipBack, SkipForward, Play, Pause, Volume2, VolumeX, Maximize2 } from 'lucide-svelte';
 
-  function handleSeek(e: Event) {
+  let isDragging = false;
+  let seekPosition = 0;
+
+  $: displayedPosition = isDragging ? seekPosition : $positionSeconds;
+
+  function handleSeekInput(e: Event) {
     const target = e.target as HTMLInputElement;
-    setPosition(parseFloat(target.value));
+    isDragging = true;
+    seekPosition = parseFloat(target.value);
+  }
+
+  async function handleSeekChange(e: Event) {
+    const target = e.target as HTMLInputElement;
+    const pos = parseFloat(target.value);
+    try {
+      await setPosition(pos);
+    } finally {
+      isDragging = false;
+    }
   }
 
   function handleVolume(e: Event) {
@@ -73,13 +89,14 @@
     </div>
 
     <div class="progress-row">
-      <span class="time-label">{formatTime($positionSeconds)}</span>
+      <span class="time-label">{formatTime(displayedPosition)}</span>
       <input
         type="range"
         min="0"
         max={$currentTrack?.durationSeconds ?? 0}
-        value={$positionSeconds}
-        on:input={handleSeek}
+        value={displayedPosition}
+        on:input={handleSeekInput}
+        on:change={handleSeekChange}
         class="progress-slider"
       />
       <span class="time-label">{formatTime($currentTrack?.durationSeconds ?? 0)}</span>

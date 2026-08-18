@@ -53,6 +53,8 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
             format TEXT,
             bitrate INTEGER,
             sample_rate INTEGER,
+            bit_depth INTEGER,
+            channels INTEGER,
             FOREIGN KEY (artist_id) REFERENCES artists(id),
             FOREIGN KEY (album_id) REFERENCES albums(id)
         );
@@ -63,6 +65,12 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
             last_scanned_at TEXT
         );"
     ).map_err(|e| format!("Failed to create tables: {}", e))?;
+
+    // Migration: add columns that may not exist in older databases.
+    // SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN,
+    // so we attempt each and silently ignore "duplicate column" errors.
+    let _ = conn.execute("ALTER TABLE tracks ADD COLUMN bit_depth INTEGER", []);
+    let _ = conn.execute("ALTER TABLE tracks ADD COLUMN channels INTEGER", []);
 
     Ok(conn)
 }
@@ -138,8 +146,8 @@ pub fn upsert_track(
     let new_id = Uuid::new_v4().to_string();
 
     let id: String = conn.query_row(
-        "INSERT INTO tracks (id, title, artist_id, album_id, duration_seconds, file_path, track_number, format, bitrate, sample_rate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO tracks (id, title, artist_id, album_id, duration_seconds, file_path, track_number, format, bitrate, sample_rate, bit_depth, channels)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(file_path) DO UPDATE SET
             title = excluded.title,
             artist_id = excluded.artist_id,
@@ -148,7 +156,9 @@ pub fn upsert_track(
             track_number = excluded.track_number,
             format = excluded.format,
             bitrate = excluded.bitrate,
-            sample_rate = excluded.sample_rate
+            sample_rate = excluded.sample_rate,
+            bit_depth = excluded.bit_depth,
+            channels = excluded.channels
          RETURNING id",
         params![
             new_id,
@@ -161,6 +171,8 @@ pub fn upsert_track(
             track.format,
             track.bitrate,
             track.sample_rate,
+            track.bit_depth,
+            track.channels,
         ],
         |row| row.get(0)
     )
@@ -279,13 +291,18 @@ pub struct TrackDto {
     pub cover_url: Option<String>,
     pub source: String,
     pub file_path: Option<String>,
+    pub format: Option<String>,
+    pub bitrate: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bit_depth: Option<u32>,
+    pub channels: Option<u32>,
 }
 
 /// Query all tracks joined with artist and album names.
 pub fn query_all_tracks(conn: &Connection) -> Result<Vec<TrackDto>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.file_path
+            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.file_path, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels
              FROM tracks t
              JOIN artists ar ON t.artist_id = ar.id
              LEFT JOIN albums al ON t.album_id = al.id
@@ -304,6 +321,11 @@ pub fn query_all_tracks(conn: &Connection) -> Result<Vec<TrackDto>, String> {
                 cover_url: None, // Cover art extraction deferred to a future pass
                 source: "local".to_string(),
                 file_path: row.get(5)?,
+                format: row.get(6)?,
+                bitrate: row.get(7)?,
+                sample_rate: row.get(8)?,
+                bit_depth: row.get(9)?,
+                channels: row.get(10)?,
             })
         })
         .map_err(|e| format!("Failed to query tracks: {}", e))?

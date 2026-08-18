@@ -1,6 +1,7 @@
 import { writable, derived, get } from 'svelte/store';
 import type { PlaybackState, Track } from './types';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const MOCK_TRACK: Track = {
   id: 'trk-1',
@@ -144,6 +145,20 @@ export function toggleLike(trackId: string): void {
   });
 }
 
+export async function stop(): Promise<void> {
+  try {
+    await invoke('stop_track');
+  } catch (err) {
+    console.warn('Failed to stop track via Tauri (fallback to mock):', err);
+  }
+  playbackState.update((s) => ({
+    ...s,
+    isPlaying: false,
+    positionSeconds: 0,
+    currentTrack: null
+  }));
+}
+
 export function skipNext(): void {
   const s = get(playbackState);
   if (s.queue.length === 0) return;
@@ -160,6 +175,45 @@ export function skipNext(): void {
   }
   
   play(s.queue[nextIndex]);
+}
+
+/**
+ * Handles track-ended events with proper repeat mode branching.
+ * - repeat 'one': replay the same track
+ * - repeat 'all': advance to next, wrapping to start at end of queue
+ * - repeat 'off': advance to next, stop at end of queue
+ */
+export function handleTrackEnd(): void {
+  const state = get(playbackState);
+  if (!state.currentTrack) return;
+
+  console.log('[player] handleTrackEnd: repeat =', state.repeat, 'current =', state.currentTrack.title);
+
+  if (state.repeat === 'one') {
+    // Replay the same track
+    play(state.currentTrack);
+  } else if (state.repeat === 'all') {
+    if (state.queue.length === 0) {
+      play(state.currentTrack);
+      return;
+    }
+    const currentIndex = state.queue.findIndex(t => t.id === state.currentTrack?.id);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % state.queue.length : 0;
+    play(state.queue[nextIndex]);
+  } else {
+    // 'off' — advance to next, but stop if at end of queue
+    if (state.queue.length === 0) {
+      stop();
+      return;
+    }
+    const currentIndex = state.queue.findIndex(t => t.id === state.currentTrack?.id);
+    if (currentIndex >= 0 && currentIndex + 1 < state.queue.length) {
+      play(state.queue[currentIndex + 1]);
+    } else {
+      // End of queue, repeat off — stop playback
+      stop();
+    }
+  }
 }
 
 export function skipPrevious(): void {

@@ -1,14 +1,18 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import type { UnlistenFn } from '@tauri-apps/api/event';
   import '$lib/theme/fonts.css';
   import '$lib/theme/tokens.css';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import NowPlayingBar from '$lib/components/NowPlayingBar.svelte';
   import NowPlayingExpanded from '$lib/components/NowPlayingExpanded.svelte';
   import WindowControls from '$lib/components/WindowControls.svelte';
-  import { isExpandedViewOpen, playbackState, skipNext, togglePlay } from '$lib/stores/player';
+  import { isExpandedViewOpen, playbackState, handleTrackEnd, togglePlay } from '$lib/stores/player';
   import { refreshLibraryFromBackend } from '$lib/stores/library';
   import { listen } from '@tauri-apps/api/event';
+
+  let unlistenPosition: UnlistenFn | undefined;
+  let unlistenEnded: UnlistenFn | undefined;
 
   // Load persisted library from SQLite on app startup
   onMount(() => {
@@ -17,11 +21,16 @@
     // Setup Tauri event listeners for audio playback
     listen<number>('playback-position', (event) => {
       playbackState.update(s => ({ ...s, positionSeconds: event.payload }));
-    }).catch(console.warn);
+    }).then(fn => { unlistenPosition = fn; }).catch(console.warn);
 
     listen('track-ended', () => {
-      skipNext();
-    }).catch(console.warn);
+      handleTrackEnd();
+    }).then(fn => { unlistenEnded = fn; }).catch(console.warn);
+  });
+
+  onDestroy(() => {
+    unlistenPosition?.();
+    unlistenEnded?.();
   });
 
   function handleKeydown(event: KeyboardEvent) {
