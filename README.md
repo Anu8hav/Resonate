@@ -17,19 +17,20 @@ Project Resonate is built around simplicity, ownership, and respect for the list
 
 ## Screenshots
 
-<!-- TODO: replace with real screenshots -->
-
 ![Albums view showing library grid](./screenshots/albums-view.png)
 *The Albums View — your local collection at a glance.*
 
 ![Tracks view showing detailed list](./screenshots/tracks-view.png)
 *The Tracks View — clean layout for track management.*
 
-![Now Playing expanded view with queue](./screenshots/now-playing-view.png)
-*Now Playing — dynamic accent colors and an interactive Up Next queue.*
+![Artists view](./screenshots/artists-view.png)
+*The Artists View.*
 
 ![Playlist view](./screenshots/playlist-view.png)
 *Playlists — organize and arrange your tracks.*
+
+![Settings view](./screenshots/settings-view.png)
+*Server Settings — detailed configurations.*
 
 ## Features
 
