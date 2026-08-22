@@ -14,6 +14,7 @@ export const serverConfig = writable<ServerConfig>({
 export const settingsState = writable<SettingsState>({
   transcodeFLACToOpus: false,
   scrobbleToLastFm: true,
+  dynamicAccentColor: true,
   cacheUsedGB: 4.2,
   cacheTotalGB: 10.0
 });

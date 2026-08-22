@@ -20,7 +20,8 @@ export interface Album {
   title: string;
   artist: string;
   coverUrl: string | null;
-  trackCount: number;
+  totalTracks: number | null;
+  locallyOwnedCount: number;
   source: 'local' | 'subsonic';
 }
 
@@ -48,6 +49,7 @@ export interface ServerConfig {
 export interface SettingsState {
   transcodeFLACToOpus: boolean;
   scrobbleToLastFm: boolean;
+  dynamicAccentColor: boolean;
   cacheUsedGB: number;
   cacheTotalGB: number;
 }

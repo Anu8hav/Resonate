@@ -72,19 +72,19 @@
   <div class="transport">
     <div class="transport-buttons">
       <button class="transport-btn" title="Previous" on:click={skipPrevious}>
-        <SkipBack size={18} />
+        <SkipBack size={20} />
       </button>
 
       <button class="play-pause-btn" on:click={togglePlay} title={$isPlaying ? 'Pause' : 'Play'}>
         {#if $isPlaying}
-          <Pause size={18} />
+          <Pause size={20} />
         {:else}
-          <Play size={18} style="margin-left: 2px;" />
+          <Play size={20} style="margin-left: 2px;" />
         {/if}
       </button>
 
       <button class="transport-btn" title="Next" on:click={skipNext}>
-        <SkipForward size={18} />
+        <SkipForward size={20} />
       </button>
     </div>
 
@@ -107,9 +107,9 @@
   <div class="volume-section">
     <button class="transport-btn" title="Volume">
       {#if $volume === 0}
-        <VolumeX size={18} />
+        <VolumeX size={20} />
       {:else}
-        <Volume2 size={18} />
+        <Volume2 size={20} />
       {/if}
     </button>
     <input
@@ -122,7 +122,7 @@
       class="volume-slider"
     />
     <button class="transport-btn expand-btn" title="Expand Now Playing" on:click={toggleExpandedView}>
-      <Maximize2 size={16} />
+      <Maximize2 size={20} />
     </button>
   </div>
 </footer>
@@ -255,16 +255,16 @@
     width: 36px;
     height: 36px;
     border-radius: 50%;
-    background-color: var(--color-primary-container);
+    background-color: var(--color-primary-container-dynamic, var(--color-primary-container));
     color: var(--color-on-primary-container);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background-color var(--transition-fast);
+    transition: background-color 400ms ease, color 400ms ease;
   }
 
   .play-pause-btn:hover {
-    background-color: var(--color-primary);
+    background-color: var(--color-primary-dynamic, var(--color-primary));
     color: var(--color-on-primary);
   }
 
@@ -304,14 +304,15 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--color-primary);
+    background: var(--color-primary-dynamic, var(--color-primary));
     cursor: pointer;
     border: none;
+    transition: background-color 400ms ease;
   }
 
   .progress-slider::-webkit-slider-thumb:hover,
   .volume-slider::-webkit-slider-thumb:hover {
-    background: var(--color-primary-container);
+    background: var(--color-primary-container-dynamic, var(--color-primary-container));
     transform: scale(1.2);
   }
 

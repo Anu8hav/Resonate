@@ -4,24 +4,24 @@ import type { Album, Track, Playlist, ScanSummary } from './types';
 /* ── Mock Albums ─────────────────────────────────────────────────────── */
 
 export const MOCK_ALBUMS: Album[] = [
-  { id: 'alb-1', title: 'Quantum Resonance', artist: 'Aetherial Echoes', coverUrl: null, trackCount: 12, source: 'local' },
-  { id: 'alb-2', title: 'Harmonic Horizons', artist: 'Celestial Frequency', coverUrl: null, trackCount: 9, source: 'subsonic' },
-  { id: 'alb-3', title: 'Analog Dreams', artist: 'Synthetica', coverUrl: null, trackCount: 14, source: 'local' },
-  { id: 'alb-4', title: 'Midnight Reverie', artist: 'Vapor Waveform', coverUrl: null, trackCount: 10, source: 'local' },
-  { id: 'alb-5', title: 'Starlight Overture', artist: 'Orchestra Nova', coverUrl: null, trackCount: 8, source: 'subsonic' },
-  { id: 'alb-6', title: 'Neon Architecture', artist: 'Digital Mirage', coverUrl: null, trackCount: 11, source: 'local' },
-  { id: 'alb-7', title: 'Solar Winds', artist: 'Helios Collective', coverUrl: null, trackCount: 7, source: 'subsonic' },
-  { id: 'alb-8', title: 'Infinite Loop', artist: 'Recursion', coverUrl: null, trackCount: 16, source: 'local' },
-  { id: 'alb-9', title: 'Deep Currents', artist: 'Oceanic Drift', coverUrl: null, trackCount: 9, source: 'local' },
-  { id: 'alb-10', title: 'Electric Cathedral', artist: 'Arc Voltage', coverUrl: null, trackCount: 13, source: 'subsonic' },
-  { id: 'alb-11', title: 'Void Transmission', artist: 'Unknown Artist', coverUrl: null, trackCount: 6, source: 'local' },
-  { id: 'alb-12', title: 'Amber Frequencies', artist: 'Warm Signal', coverUrl: null, trackCount: 10, source: 'local' },
-  { id: 'alb-13', title: 'Ghost Patterns', artist: 'Spectral Audio', coverUrl: null, trackCount: 8, source: 'subsonic' },
-  { id: 'alb-14', title: 'Pulse Width', artist: 'Modular Synthesis', coverUrl: null, trackCount: 15, source: 'local' },
-  { id: 'alb-15', title: 'Chromatic Shift', artist: 'Prism Effect', coverUrl: null, trackCount: 11, source: 'local' },
-  { id: 'alb-16', title: 'Terminal Velocity', artist: 'Free Fall', coverUrl: null, trackCount: 9, source: 'subsonic' },
-  { id: 'alb-17', title: 'Frozen Light', artist: 'Absolute Zero', coverUrl: null, trackCount: 7, source: 'local' },
-  { id: 'alb-18', title: 'Magnetic North', artist: 'Polar Shift', coverUrl: null, trackCount: 12, source: 'local' },
+  { id: 'alb-1', title: 'Quantum Resonance', artist: 'Aetherial Echoes', coverUrl: null, totalTracks: 12, locallyOwnedCount: 12, source: 'local' },
+  { id: 'alb-2', title: 'Harmonic Horizons', artist: 'Celestial Frequency', coverUrl: null, totalTracks: 9, locallyOwnedCount: 9, source: 'subsonic' },
+  { id: 'alb-3', title: 'Analog Dreams', artist: 'Synthetica', coverUrl: null, totalTracks: 14, locallyOwnedCount: 14, source: 'local' },
+  { id: 'alb-4', title: 'Midnight Reverie', artist: 'Vapor Waveform', coverUrl: null, totalTracks: 10, locallyOwnedCount: 10, source: 'local' },
+  { id: 'alb-5', title: 'Starlight Overture', artist: 'Orchestra Nova', coverUrl: null, totalTracks: 8, locallyOwnedCount: 8, source: 'subsonic' },
+  { id: 'alb-6', title: 'Neon Architecture', artist: 'Digital Mirage', coverUrl: null, totalTracks: 11, locallyOwnedCount: 11, source: 'local' },
+  { id: 'alb-7', title: 'Solar Winds', artist: 'Helios Collective', coverUrl: null, totalTracks: 7, locallyOwnedCount: 7, source: 'subsonic' },
+  { id: 'alb-8', title: 'Infinite Loop', artist: 'Recursion', coverUrl: null, totalTracks: 16, locallyOwnedCount: 16, source: 'local' },
+  { id: 'alb-9', title: 'Deep Currents', artist: 'Oceanic Drift', coverUrl: null, totalTracks: 9, locallyOwnedCount: 9, source: 'local' },
+  { id: 'alb-10', title: 'Electric Cathedral', artist: 'Arc Voltage', coverUrl: null, totalTracks: 13, locallyOwnedCount: 13, source: 'subsonic' },
+  { id: 'alb-11', title: 'Void Transmission', artist: 'Unknown Artist', coverUrl: null, totalTracks: 6, locallyOwnedCount: 6, source: 'local' },
+  { id: 'alb-12', title: 'Amber Frequencies', artist: 'Warm Signal', coverUrl: null, totalTracks: 10, locallyOwnedCount: 10, source: 'local' },
+  { id: 'alb-13', title: 'Ghost Patterns', artist: 'Spectral Audio', coverUrl: null, totalTracks: 8, locallyOwnedCount: 8, source: 'subsonic' },
+  { id: 'alb-14', title: 'Pulse Width', artist: 'Modular Synthesis', coverUrl: null, totalTracks: 15, locallyOwnedCount: 15, source: 'local' },
+  { id: 'alb-15', title: 'Chromatic Shift', artist: 'Prism Effect', coverUrl: null, totalTracks: 11, locallyOwnedCount: 11, source: 'local' },
+  { id: 'alb-16', title: 'Terminal Velocity', artist: 'Free Fall', coverUrl: null, totalTracks: 9, locallyOwnedCount: 9, source: 'subsonic' },
+  { id: 'alb-17', title: 'Frozen Light', artist: 'Absolute Zero', coverUrl: null, totalTracks: 7, locallyOwnedCount: 7, source: 'local' },
+  { id: 'alb-18', title: 'Magnetic North', artist: 'Polar Shift', coverUrl: null, totalTracks: 12, locallyOwnedCount: 12, source: 'local' },
 ];
 
 /* ── Mock Tracks ─────────────────────────────────────────────────────── */
@@ -92,17 +92,27 @@ export async function refreshLibraryFromBackend(): Promise<void> {
   if (!isTauri()) return;
 
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
     const [realAlbums, realTracks] = await Promise.all([
       invoke<Album[]>('get_all_albums'),
       invoke<Track[]>('get_all_tracks'),
     ]);
 
+    const albumsWithUrls = realAlbums.map(a => ({
+      ...a,
+      coverUrl: a.coverUrl ? convertFileSrc(a.coverUrl) : null
+    }));
+
+    const tracksWithUrls = realTracks.map(t => ({
+      ...t,
+      coverUrl: t.coverUrl ? convertFileSrc(t.coverUrl) : null
+    }));
+
     // Only replace stores if the backend returned data —
     // keep mock data as fallback for empty-library first run
-    if (realAlbums.length > 0 || realTracks.length > 0) {
-      albums.set(realAlbums);
-      tracks.set(realTracks);
+    if (albumsWithUrls.length > 0 || tracksWithUrls.length > 0) {
+      albums.set(albumsWithUrls);
+      tracks.set(tracksWithUrls);
     }
   } catch (err) {
     console.warn('[library] Failed to refresh from backend, keeping mock data:', err);

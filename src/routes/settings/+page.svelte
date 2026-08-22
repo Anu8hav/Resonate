@@ -1,9 +1,10 @@
 <script lang="ts">
   import { serverConfig, settingsState } from '$lib/stores/server';
-  import { pickAndScanFolder } from '$lib/stores/library';
+  import { pickAndScanFolder, albums, tracks } from '$lib/stores/library';
   import type { ScanSummary } from '$lib/stores/types';
   import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-  import { RefreshCw, FolderOpen, Loader2 } from 'lucide-svelte';
+  import { RefreshCw, FolderOpen, Loader2, Trash2, FileAudio } from 'lucide-svelte';
+  import { invoke } from '@tauri-apps/api/core';
 
   // Sub-nav state for settings context
   type SettingsTab = 'server' | 'library';
@@ -30,12 +31,57 @@
     }
   }
 
+  async function handleAddSingleTrack() {
+    scanError = null;
+    clearSuccessMsg = null;
+    try {
+      const newTrack: any = await invoke('add_single_track');
+      if (newTrack) {
+        // Optimistic refresh
+        const [allTracks, allAlbums]: [any[], any[]] = await Promise.all([
+          invoke<any[]>('get_all_tracks'),
+          invoke<any[]>('get_all_albums')
+        ]);
+        tracks.set(allTracks);
+        albums.set(allAlbums);
+        
+        clearSuccessMsg = `Added '${newTrack.title}' to your library.`;
+        setTimeout(() => clearSuccessMsg = null, 3000);
+      }
+    } catch (err) {
+      scanError = String(err);
+    }
+  }
+
+  // TESTING ONLY — remove before release
+  let clearSuccessMsg: string | null = null;
+  async function handleClearLibrary() {
+    const confirmClear = window.confirm("This will delete all scanned tracks, albums, and artists. Continue?");
+    if (!confirmClear) return;
+    
+    try {
+      await invoke('clear_library');
+      albums.set([]);
+      tracks.set([]);
+      clearSuccessMsg = "Library cleared.";
+      lastScanSummary = null;
+      scanError = null;
+      setTimeout(() => clearSuccessMsg = null, 3000);
+    } catch (err) {
+      scanError = String(err);
+    }
+  }
+
   function handleTranscodeToggle(e: CustomEvent<boolean>) {
     settingsState.update((s) => ({ ...s, transcodeFLACToOpus: e.detail }));
   }
 
   function handleScrobbleToggle(e: CustomEvent<boolean>) {
     settingsState.update((s) => ({ ...s, scrobbleToLastFm: e.detail }));
+  }
+
+  function handleAccentToggle(e: CustomEvent<boolean>) {
+    settingsState.update((s) => ({ ...s, dynamicAccentColor: e.detail }));
   }
 
   $: cachePercent = ($settingsState.cacheUsedGB / $settingsState.cacheTotalGB) * 100;
@@ -159,6 +205,18 @@
       />
     </div>
 
+    <!-- Dynamic Accent Toggle -->
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span class="toggle-label">Dynamic Accent Color</span>
+        <span class="toggle-desc">Adapt app colors to match the currently playing album art</span>
+      </div>
+      <ToggleSwitch
+        checked={$settingsState.dynamicAccentColor}
+        on:change={handleAccentToggle}
+      />
+    </div>
+
     <!-- Cache Bar -->
     <div class="cache-section">
       <div class="cache-header">
@@ -190,6 +248,11 @@
         {/if}
       </button>
 
+      <button class="resync-btn" on:click={handleAddSingleTrack}>
+        <FileAudio size={14} />
+        <span>Add Track</span>
+      </button>
+
       {#if scanError}
         <div class="scan-error">{scanError}</div>
       {/if}
@@ -201,6 +264,16 @@
             ({lastScanSummary.tracksSkipped} tracks skipped)
           {/if}
         </div>
+      {/if}
+
+      <!-- TESTING ONLY — remove before release -->
+      <button class="resync-btn clear-db-btn" on:click={handleClearLibrary}>
+        <Trash2 size={14} />
+        <span>Clear Library (Testing)</span>
+      </button>
+
+      {#if clearSuccessMsg}
+        <div class="scan-summary" style="color: var(--color-status-online);">{clearSuccessMsg}</div>
       {/if}
     </div>
   </div>
@@ -221,6 +294,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    min-height: 40px;
   }
 
   .page-title {
@@ -428,6 +502,17 @@
   .resync-btn:hover {
     border-color: var(--color-primary);
     color: var(--color-primary);
+  }
+
+  .clear-db-btn {
+    margin-top: var(--space-2);
+    border-color: var(--color-error, #cf6679);
+    color: var(--color-error, #cf6679);
+  }
+
+  .clear-db-btn:hover {
+    background-color: var(--color-error, #cf6679);
+    color: var(--color-surface, #121212);
   }
 
   /* ── Toggle Rows ───────────────────────────────────────────────── */

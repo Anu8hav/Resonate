@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { tracks } from '$lib/stores/library';
-  import { currentTrack, play, formatTime } from '$lib/stores/player';
-  import { Search, Volume2 } from 'lucide-svelte';
+  import { tracks, albums } from '$lib/stores/library';
+  import { currentTrack, play, formatTime, stop, skipNext, playbackState } from '$lib/stores/player';
+  import { Search, Volume2, Trash2 } from 'lucide-svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { get } from 'svelte/store';
 
   let searchQuery = '';
 
@@ -13,6 +15,40 @@
           (t.album ?? '').toLowerCase().includes(searchQuery.toLowerCase())
       )
     : $tracks;
+
+  async function handleDelete(track: any, e: MouseEvent) {
+    e.stopPropagation();
+    if (!window.confirm(`Remove '${track.title}' from your library? This won't delete the file from your computer.`)) {
+      return;
+    }
+
+    try {
+      await invoke('delete_track', { trackId: track.id });
+      
+      // Stop/advance playback if it's the currently playing track
+      if ($currentTrack?.id === track.id) {
+        const state = get(playbackState);
+        const currentIndex = state.queue.findIndex(t => t.id === track.id);
+        
+        if (state.queue.length > 1 && currentIndex >= 0 && currentIndex < state.queue.length - 1) {
+          skipNext();
+        } else {
+          stop();
+        }
+      }
+
+      // Optimistic refresh
+      const [allTracks, allAlbums]: [any[], any[]] = await Promise.all([
+        invoke<any[]>('get_all_tracks'),
+        invoke<any[]>('get_all_albums')
+      ]);
+      tracks.set(allTracks);
+      albums.set(allAlbums);
+    } catch (err) {
+      console.error('Failed to delete track:', err);
+      alert('Failed to delete track.');
+    }
+  }
 </script>
 
 <div class="tracks-page">
@@ -43,6 +79,7 @@
             <th class="col-artist">ARTIST</th>
             <th class="col-album">ALBUM</th>
             <th class="col-time">TIME</th>
+            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody>
@@ -64,6 +101,11 @@
               <td class="col-artist">{track.artist}</td>
               <td class="col-album">{track.album ?? '—'}</td>
               <td class="col-time">{formatTime(track.durationSeconds)}</td>
+              <td class="col-actions">
+                <button class="delete-btn" title="Remove from Library" on:click={(e) => handleDelete(track, e)}>
+                  <Trash2 size={16} />
+                </button>
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -91,6 +133,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--gutter);
+    min-height: 40px;
   }
 
   .page-title {
@@ -191,6 +234,7 @@
   .col-artist { width: 22%; }
   .col-album { width: 25%; }
   .col-time { width: 72px; text-align: right; }
+  .col-actions { width: 48px; text-align: center; }
 
   .tracks-table th.col-num,
   .tracks-table td.col-num { text-align: center; }
@@ -241,6 +285,29 @@
     font-size: var(--font-mono-data-size);
     font-weight: var(--font-mono-data-weight);
     color: var(--color-on-surface-variant);
+  }
+
+  .delete-btn {
+    opacity: 0;
+    color: var(--color-outline);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: var(--radius-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity var(--transition-fast), color var(--transition-fast), background-color var(--transition-fast);
+  }
+
+  tr:hover .delete-btn {
+    opacity: 1;
+  }
+
+  .delete-btn:hover {
+    color: var(--color-error, #cf6679);
+    background-color: var(--color-surface-container-highest);
   }
 
   /* ── Empty State ───────────────────────────────────────────────── */

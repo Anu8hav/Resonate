@@ -1,7 +1,8 @@
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
-use std::fs::File;
-use std::io::BufReader;
-use std::time::{Duration, Instant};
+use rodio::{OutputStream, OutputStreamHandle, Sink};
+use std::path::Path;
+use std::time::Instant;
+
+use crate::symphonia_source::SymphoniaSource;
 
 pub struct AudioEngine {
     stream_handle: OutputStreamHandle,
@@ -46,17 +47,12 @@ impl AudioEngine {
         })
     }
 
-    /// Stops any current sink, opens the file, decodes, and starts playback.
+    /// Stops any current sink, opens the file via symphonia, and starts playback.
     pub fn play_file(&mut self, file_path: &str, duration: Option<f64>) -> Result<(), String> {
         // Stop current playback
         self.stop();
 
-        let file = File::open(file_path)
-            .map_err(|e| format!("Failed to open audio file {}: {}", file_path, e))?;
-        let reader = BufReader::new(file);
-        
-        let source = Decoder::new(reader)
-            .map_err(|e| format!("Failed to decode audio file: {}", e))?;
+        let source = SymphoniaSource::new(Path::new(file_path))?;
 
         let sink = Sink::try_new(&self.stream_handle)
             .map_err(|e| format!("Failed to create audio sink: {}", e))?;
@@ -67,7 +63,7 @@ impl AudioEngine {
         self.sink = Some(sink);
         self.current_track_path = Some(file_path.to_string());
         self.current_track_duration = duration;
-        
+
         self.accumulated_position = 0.0;
         self.play_started_at = Some(Instant::now());
 
@@ -120,23 +116,20 @@ impl AudioEngine {
         let was_playing = self.sink.as_ref().map(|s| !s.is_paused()).unwrap_or(false);
         let current_vol = self.sink.as_ref().map(|s| s.volume()).unwrap_or(1.0);
 
-        // Drop the old sink completely — this stops old buffered audio immediately,
-        // eliminating the overlap glitch that try_seek can cause with symphonia decoders
+        // Drop the old sink completely — this stops old buffered audio immediately
         if let Some(old_sink) = self.sink.take() {
             old_sink.stop();
         }
 
-        let file = File::open(&path).map_err(|e| format!("Seek open failed: {}", e))?;
-        let source = Decoder::new(BufReader::new(file))
-            .map_err(|e| format!("Seek decode failed: {}", e))?;
-
-        // Skip decoded samples up to the seek position
-        let skipped = source.skip_duration(Duration::from_secs_f64(position_seconds));
+        // Create a fresh source and use symphonia's native format-level seek
+        // (index/seek-table based — O(1) regardless of seek distance)
+        let mut source = SymphoniaSource::new(Path::new(&path))?;
+        source.seek_to(position_seconds)?;
 
         let new_sink = Sink::try_new(&self.stream_handle)
             .map_err(|e| format!("Seek sink creation failed: {}", e))?;
         new_sink.set_volume(current_vol);
-        new_sink.append(skipped);
+        new_sink.append(source);
 
         if !was_playing {
             new_sink.pause();

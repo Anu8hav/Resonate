@@ -58,7 +58,7 @@
         class:active={isActive($page.url.pathname, item.href)}
         on:click={() => navigate(item.href)}
       >
-        <svelte:component this={item.icon} size={18} />
+        <svelte:component this={item.icon} size={16} />
         <span class="nav-label">{item.label}</span>
       </button>
     {/each}
@@ -76,7 +76,7 @@
         class:active={isActive($page.url.pathname, item.href)}
         on:click={() => navigate(item.href)}
       >
-        <svelte:component this={item.icon} size={18} />
+        <svelte:component this={item.icon} size={16} />
         <span class="nav-label">{item.label}</span>
       </button>
     {/each}

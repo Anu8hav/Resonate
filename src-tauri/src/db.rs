@@ -22,9 +22,10 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")
         .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
 
-    // Enable foreign keys
-    conn.execute_batch("PRAGMA foreign_keys=ON;")
-        .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
+    // Explicitly DISABLE foreign keys before migrations to allow table recreation
+    // (some SQLite builds default to ON). We enable them after migration.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| format!("Failed to disable foreign keys: {}", e))?;
 
     // Create tables
     conn.execute_batch(
@@ -38,6 +39,7 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
             title TEXT NOT NULL,
             artist_id TEXT NOT NULL,
             cover_path TEXT,
+            total_tracks INTEGER,
             FOREIGN KEY (artist_id) REFERENCES artists(id),
             UNIQUE(title, artist_id)
         );
@@ -67,10 +69,96 @@ pub fn init_db(app_data_dir: &PathBuf) -> Result<Connection, String> {
     ).map_err(|e| format!("Failed to create tables: {}", e))?;
 
     // Migration: add columns that may not exist in older databases.
-    // SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN,
-    // so we attempt each and silently ignore "duplicate column" errors.
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN bit_depth INTEGER", []);
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN channels INTEGER", []);
+
+    // Check schema version for migrations
+    let user_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to read user_version: {}", e))?;
+
+    if user_version < 1 {
+        // Version 1 Migration: Enforce UNIQUE constraints properly on existing tables by deduping rows.
+        // Because SQLite's IF NOT EXISTS ignores schema changes on existing tables, we must explicitly
+        // recreate them to apply the UNIQUE constraints and clean up the existing duplicate rows.
+        conn.execute_batch(
+            r#"
+            BEGIN TRANSACTION;
+            
+            -- Artists migration
+            CREATE TABLE artists_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            INSERT OR IGNORE INTO artists_new
+            SELECT * FROM artists;
+            DROP TABLE artists;
+            ALTER TABLE artists_new RENAME TO artists;
+
+            -- Albums migration
+            CREATE TABLE albums_new (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist_id TEXT NOT NULL,
+                cover_path TEXT,
+                total_tracks INTEGER,
+                FOREIGN KEY (artist_id) REFERENCES artists(id),
+                UNIQUE(title, artist_id)
+            );
+            INSERT OR IGNORE INTO albums_new
+            SELECT * FROM albums;
+            DROP TABLE albums;
+            ALTER TABLE albums_new RENAME TO albums;
+
+            -- Tracks migration
+            CREATE TABLE tracks_new (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist_id TEXT NOT NULL,
+                album_id TEXT,
+                duration_seconds INTEGER NOT NULL,
+                file_path TEXT NOT NULL UNIQUE,
+                track_number INTEGER,
+                format TEXT,
+                bitrate INTEGER,
+                sample_rate INTEGER,
+                bit_depth INTEGER,
+                channels INTEGER,
+                FOREIGN KEY (artist_id) REFERENCES artists(id),
+                FOREIGN KEY (album_id) REFERENCES albums(id)
+            );
+            
+            -- Group by normalized path: replace backslashes and lowercase.
+            -- This perfectly mimics the `scanner::normalize_path` logic in SQL.
+            INSERT INTO tracks_new
+            SELECT * FROM tracks
+            WHERE rowid IN (
+                SELECT MAX(rowid) FROM tracks
+                GROUP BY LOWER(REPLACE(file_path, '\', '/'))
+            );
+            DROP TABLE tracks;
+            ALTER TABLE tracks_new RENAME TO tracks;
+
+            PRAGMA user_version = 1;
+            COMMIT TRANSACTION;
+            "#
+        ).map_err(|e| format!("Failed to migrate to version 1: {}", e))?;
+    }
+
+    if user_version < 2 {
+        // Version 2 Migration: Add total_tracks to albums
+        conn.execute_batch(
+            r#"
+            BEGIN TRANSACTION;
+            ALTER TABLE albums ADD COLUMN total_tracks INTEGER;
+            PRAGMA user_version = 2;
+            COMMIT TRANSACTION;
+            "#
+        ).map_err(|e| format!("Failed to migrate to version 2: {}", e))?;
+    }
+
+    // Enable foreign keys now that migration is complete
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
 
     Ok(conn)
 }
@@ -109,27 +197,45 @@ pub fn get_or_create_album(
     conn: &Connection,
     title: &str,
     artist_id: &str,
+    cover_path: Option<&str>,
+    incoming_total_tracks: Option<u32>,
 ) -> Result<String, String> {
     let trimmed = title.trim();
 
-    // Try to find existing album by this artist (case-insensitive title)
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM albums WHERE LOWER(TRIM(title)) = LOWER(?1) AND artist_id = ?2",
-            params![trimmed, artist_id],
-            |row| row.get(0),
-        )
-        .ok();
+    // Check if album exists
+    let existing: Option<(String, Option<u32>)> = conn.query_row(
+        "SELECT id, total_tracks FROM albums WHERE LOWER(TRIM(title)) = LOWER(?1) AND artist_id = ?2",
+        params![trimmed, artist_id],
+        |row| Ok((row.get(0)?, row.get(1)?))
+    ).ok();
 
-    if let Some(id) = existing {
+    if let Some((id, existing_total)) = existing {
+        // If we found a track with a known total, and the DB doesn't have one or the DB has a smaller one, update it.
+        // Prefer the highest value seen, as a fuller scan is more authoritative.
+        if let Some(incoming_t) = incoming_total_tracks {
+            let should_update = match existing_total {
+                None => true,
+                Some(et) => incoming_t > et,
+            };
+            if should_update {
+                conn.execute(
+                    "UPDATE albums SET total_tracks = ?1 WHERE id = ?2",
+                    params![incoming_t, id]
+                ).map_err(|e| format!("Failed to update album total_tracks: {}", e))?;
+                // log conflict if needed
+                if existing_total.is_some() && existing_total.unwrap() != incoming_t {
+                    eprintln!("[scanner] Conflict for album '{}': updating total_tracks from {} to {}", trimmed, existing_total.unwrap(), incoming_t);
+                }
+            }
+        }
         return Ok(id);
     }
 
     // Insert new album
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO albums (id, title, artist_id, cover_path) VALUES (?1, ?2, ?3, NULL)",
-        params![id, trimmed, artist_id],
+        "INSERT INTO albums (id, title, artist_id, cover_path, total_tracks) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, trimmed, artist_id, cover_path, incoming_total_tracks],
     )
     .map_err(|e| format!("Failed to insert album '{}': {}", trimmed, e))?;
 
@@ -144,6 +250,7 @@ pub fn upsert_track(
     album_id: Option<&str>,
 ) -> Result<String, String> {
     let new_id = Uuid::new_v4().to_string();
+    let normalized_file_path = crate::scanner::normalize_path(std::path::Path::new(&track.file_path));
 
     let id: String = conn.query_row(
         "INSERT INTO tracks (id, title, artist_id, album_id, duration_seconds, file_path, track_number, format, bitrate, sample_rate, bit_depth, channels)
@@ -166,7 +273,7 @@ pub fn upsert_track(
             artist_id,
             album_id,
             track.duration_seconds,
-            track.file_path,
+            normalized_file_path,
             track.track_number,
             track.format,
             track.bitrate,
@@ -244,22 +351,31 @@ pub struct AlbumDto {
     pub title: String,
     pub artist: String,
     pub cover_url: Option<String>,
-    pub track_count: u32,
+    pub year: Option<u32>,
     pub source: String,
+    pub total_tracks: Option<u32>,
+    pub locally_owned_count: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumDetailDto {
+    #[serde(flatten)]
+    pub album: AlbumDto,
+    pub tracks: Vec<TrackDto>,
 }
 
 /// Query all albums joined with artist name and track count.
 pub fn query_all_albums(conn: &Connection) -> Result<Vec<AlbumDto>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT a.id, a.title, ar.name, a.cover_path, COUNT(t.id) as track_count
-             FROM albums a
-             JOIN artists ar ON a.artist_id = ar.id
-             LEFT JOIN tracks t ON t.album_id = a.id
-             GROUP BY a.id
-             ORDER BY a.title COLLATE NOCASE ASC"
+            "SELECT al.id, al.title, ar.name, al.cover_path, al.total_tracks,
+             (SELECT COUNT(*) FROM tracks WHERE album_id = al.id) as locally_owned_count
+             FROM albums al
+             JOIN artists ar ON al.artist_id = ar.id
+             ORDER BY ar.name COLLATE NOCASE ASC, al.title COLLATE NOCASE ASC"
         )
-        .map_err(|e| format!("Failed to prepare albums query: {}", e))?;
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
     let albums = stmt
         .query_map([], |row| {
@@ -268,8 +384,10 @@ pub fn query_all_albums(conn: &Connection) -> Result<Vec<AlbumDto>, String> {
                 title: row.get(1)?,
                 artist: row.get(2)?,
                 cover_url: row.get(3)?,
-                track_count: row.get::<_, u32>(4)?,
+                year: None,
                 source: "local".to_string(),
+                total_tracks: row.get(4)?,
+                locally_owned_count: row.get(5)?,
             })
         })
         .map_err(|e| format!("Failed to query albums: {}", e))?
@@ -302,7 +420,7 @@ pub struct TrackDto {
 pub fn query_all_tracks(conn: &Connection) -> Result<Vec<TrackDto>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.file_path, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels
+            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.file_path, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels, al.cover_path
              FROM tracks t
              JOIN artists ar ON t.artist_id = ar.id
              LEFT JOIN albums al ON t.album_id = al.id
@@ -318,7 +436,7 @@ pub fn query_all_tracks(conn: &Connection) -> Result<Vec<TrackDto>, String> {
                 artist: row.get(2)?,
                 album: row.get(3)?,
                 duration_seconds: row.get(4)?,
-                cover_url: None, // Cover art extraction deferred to a future pass
+                cover_url: row.get(11)?,
                 source: "local".to_string(),
                 file_path: row.get(5)?,
                 format: row.get(6)?,
@@ -328,9 +446,253 @@ pub fn query_all_tracks(conn: &Connection) -> Result<Vec<TrackDto>, String> {
                 channels: row.get(10)?,
             })
         })
-        .map_err(|e| format!("Failed to query tracks: {}", e))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .map_err(|e| format!("Failed to query tracks: {}", e))?;
 
-    Ok(tracks)
+    let mut result = Vec::new();
+    for t in tracks {
+        result.push(t.map_err(|e| format!("Row error: {}", e))?);
+    }
+    Ok(result)
+}
+
+/// Query a single album with its full tracklist.
+pub fn get_album_with_tracks(conn: &Connection, album_id: &str) -> Result<AlbumDetailDto, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT al.id, al.title, ar.name, al.cover_path, al.total_tracks,
+             (SELECT COUNT(*) FROM tracks WHERE album_id = al.id) as locally_owned_count
+             FROM albums al
+             JOIN artists ar ON al.artist_id = ar.id
+             WHERE al.id = ?1"
+        )
+        .map_err(|e| format!("Failed to prepare album query: {}", e))?;
+
+    let album: AlbumDto = stmt
+        .query_row(params![album_id], |row| {
+            Ok(AlbumDto {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                cover_url: row.get(3)?,
+                year: None,
+                source: "local".to_string(),
+                total_tracks: row.get(4)?,
+                locally_owned_count: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("Failed to find album '{}': {}", album_id, e))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.cover_path,
+             t.file_path, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels
+             FROM tracks t
+             JOIN artists ar ON t.artist_id = ar.id
+             LEFT JOIN albums al ON t.album_id = al.id
+             WHERE t.album_id = ?1
+             ORDER BY t.track_number ASC, t.title COLLATE NOCASE ASC"
+        )
+        .map_err(|e| format!("Failed to prepare tracks query: {}", e))?;
+
+    let tracks = stmt
+        .query_map(params![album_id], |row| {
+            Ok(TrackDto {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                duration_seconds: row.get(4)?,
+                cover_url: row.get(5)?,
+                source: "local".to_string(),
+                file_path: Some(row.get(6)?),
+                format: row.get(7)?,
+                bitrate: row.get(8)?,
+                sample_rate: row.get(9)?,
+                bit_depth: row.get(10)?,
+                channels: row.get(11)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query tracks: {}", e))?;
+
+    let mut result_tracks = Vec::new();
+    for t in tracks {
+        result_tracks.push(t.map_err(|e| format!("Row error: {}", e))?);
+    }
+
+    Ok(AlbumDetailDto {
+        album,
+        tracks: result_tracks,
+    })
+}
+
+pub fn query_track_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<TrackDto>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.title, ar.name, al.title, t.duration_seconds, t.file_path, t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels, al.cover_path
+             FROM tracks t
+             JOIN artists ar ON t.artist_id = ar.id
+             LEFT JOIN albums al ON t.album_id = al.id
+             WHERE t.id = ?1"
+        )
+        .map_err(|e| format!("Failed to prepare track query: {}", e))?;
+
+    let mut tracks = stmt
+        .query_map(rusqlite::params![id], |row| {
+            Ok(TrackDto {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                duration_seconds: row.get(4)?,
+                cover_url: row.get(11)?,
+                source: "local".to_string(),
+                file_path: row.get(5)?,
+                format: row.get(6)?,
+                bitrate: row.get(7)?,
+                sample_rate: row.get(8)?,
+                bit_depth: row.get(9)?,
+                channels: row.get(10)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query track: {}", e))?;
+
+    Ok(tracks.next().and_then(|r| r.ok()))
+}
+
+#[tauri::command]
+pub fn delete_track(db: tauri::State<'_, crate::DbState>, track_id: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    
+    conn.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![track_id])
+        .map_err(|e| e.to_string())?;
+        
+    cleanup_orphaned_albums_and_artists(&conn)?;
+    Ok(())
+}
+
+fn cleanup_orphaned_albums_and_artists(conn: &rusqlite::Connection) -> Result<(), String> {
+    // Delete albums that have no remaining tracks
+    conn.execute(
+        "DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)",
+        [],
+    ).map_err(|e| e.to_string())?;
+    
+    // Delete artists that have no remaining tracks AND no remaining albums
+    conn.execute(
+        "DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks) AND id NOT IN (SELECT DISTINCT artist_id FROM albums)",
+        [],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn setup_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+            CREATE TABLE artists (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE albums (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist_id TEXT NOT NULL,
+                cover_path TEXT,
+                total_tracks INTEGER,
+                FOREIGN KEY (artist_id) REFERENCES artists(id),
+                UNIQUE(title, artist_id)
+            );
+            CREATE TABLE tracks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist_id TEXT NOT NULL,
+                album_id TEXT,
+                duration_seconds INTEGER NOT NULL,
+                file_path TEXT NOT NULL UNIQUE,
+                track_number INTEGER,
+                format TEXT,
+                bitrate INTEGER,
+                sample_rate INTEGER,
+                bit_depth INTEGER,
+                channels INTEGER,
+                FOREIGN KEY (artist_id) REFERENCES artists(id),
+                FOREIGN KEY (album_id) REFERENCES albums(id)
+            );"
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_artist_and_album_deduplication() {
+        let conn = setup_test_db();
+        
+        // Test artist deduplication
+        let artist_id1 = get_or_create_artist(&conn, "Kendrick Lamar").unwrap();
+        let artist_id2 = get_or_create_artist(&conn, "kendrick lamar ").unwrap(); // different case and space
+        assert_eq!(artist_id1, artist_id2, "Artists should deduplicate case-insensitively");
+
+        // Test album deduplication
+        let album_id1 = get_or_create_album(&conn, "Not Like Us", &artist_id1, None, None).unwrap();
+        let album_id2 = get_or_create_album(&conn, "not like us", &artist_id1, None, None).unwrap(); // different case
+        assert_eq!(album_id1, album_id2, "Albums should deduplicate case-insensitively");
+    }
+
+    #[test]
+    fn test_track_upsert_deduplication() {
+        let conn = setup_test_db();
+        let artist_id = get_or_create_artist(&conn, "Artist").unwrap();
+        
+        // Initial track
+        let mut track1 = ScannedTrack {
+            title: "Song 1".to_string(),
+            artist: "Artist".to_string(),
+            album: None,
+            duration_seconds: 100,
+            file_path: "C:\\Music\\Song.mp3".to_string(),
+            track_number: None,
+            format: "MP3".to_string(),
+            bitrate: None,
+            sample_rate: None,
+            bit_depth: None,
+            channels: None,
+            cover_path: None,
+        };
+        
+        // The scanner is supposed to normalize it before passing it in.
+        // Let's test if upsert_track handles it properly.
+        let id1 = upsert_track(&conn, &track1, &artist_id, None).unwrap();
+        
+        // Second track with different case/slash, mimicking an un-normalized string
+        let mut track2 = ScannedTrack {
+            title: "Song 1".to_string(),
+            artist: "Artist".to_string(),
+            album: None,
+            duration_seconds: 100,
+            file_path: "c:/music/song.mp3".to_string(),
+            track_number: None,
+            format: "MP3".to_string(),
+            bitrate: None,
+            sample_rate: None,
+            bit_depth: None,
+            channels: None,
+            cover_path: None,
+        };
+        
+        let id2 = upsert_track(&conn, &track2, &artist_id, None).unwrap();
+        
+        // Wait, if upsert_track doesn't normalize, they will be different rows.
+        let count: u32 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0)).unwrap();
+        
+        // If normalization is applied correctly in upsert_track, count should be 1.
+        // I will assert count == 1, which will fail if I haven't fixed it yet.
+        assert_eq!(count, 1, "There should only be 1 track in the DB");
+        assert_eq!(id1, id2, "Upsert should return the same ID");
+    }
 }

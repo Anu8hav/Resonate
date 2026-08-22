@@ -10,11 +10,13 @@ pub struct ScannedTrack {
     pub duration_seconds: u32,
     pub file_path: String,
     pub track_number: Option<u32>,
+    pub total_tracks: Option<u32>,
     pub format: String,
     pub bitrate: Option<u32>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
     pub channels: Option<u8>,
+    pub cover_path: Option<String>,
 }
 
 /// Result of scanning a directory — successful tracks plus paths of skipped files.
@@ -50,6 +52,17 @@ fn filename_without_extension(path: &Path) -> String {
         .to_string()
 }
 
+/// Normalize a file path for consistent database storage and comparison.
+/// Converts backslashes to forward slashes, and on Windows, converts to lowercase.
+pub fn normalize_path(path: &Path) -> String {
+    let mut s = path.to_string_lossy().to_string().replace('\\', "/");
+    #[cfg(target_os = "windows")]
+    {
+        s = s.to_lowercase();
+    }
+    s
+}
+
 /// Scan a directory recursively for audio files and extract metadata from each.
 ///
 /// This function does NOT write to the database — it only reads files and returns
@@ -57,7 +70,7 @@ fn filename_without_extension(path: &Path) -> String {
 ///
 /// Individual file failures (corrupt files, unsupported codecs) are caught and
 /// logged — the file path is added to `skipped` and scanning continues.
-pub fn scan_directory(path: &Path) -> Result<ScanResult, String> {
+pub fn scan_directory(path: &Path, app_data_dir: &Path) -> Result<ScanResult, String> {
     if !path.exists() {
         return Err(format!("Directory does not exist: {:?}", path));
     }
@@ -83,7 +96,7 @@ pub fn scan_directory(path: &Path) -> Result<ScanResult, String> {
         let file_path_str = file_path.to_string_lossy().to_string();
 
         // Attempt to read metadata — skip this file on failure
-        match read_track_metadata(file_path) {
+        match read_track_metadata(file_path, app_data_dir) {
             Ok(track) => tracks.push(track),
             Err(err) => {
                 eprintln!("[scanner] Skipping {:?}: {}", file_path_str, err);
@@ -95,8 +108,8 @@ pub fn scan_directory(path: &Path) -> Result<ScanResult, String> {
     Ok(ScanResult { tracks, skipped })
 }
 
-/// Read metadata from a single audio file using lofty.
-fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
+/// Read metadata from a single audio file using lofty, and extract cover art.
+pub fn read_track_metadata(path: &Path, app_data_dir: &Path) -> Result<ScannedTrack, String> {
     let tagged_file = lofty::read_from_path(path)
         .map_err(|e| format!("Failed to read tags: {}", e))?;
 
@@ -118,6 +131,47 @@ fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
     let album = tag.and_then(|t| t.album().map(|s| s.to_string()));
 
     let track_number = tag.and_then(|t| t.track());
+    let total_tracks = tag.and_then(|t| t.track_total());
+
+    // Extract cover art
+    let mut cover_path = None;
+    if let Some(t) = &tag {
+        let pictures = t.pictures();
+        if !pictures.is_empty() {
+            let picture = pictures
+                .iter()
+                .find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront)
+                .unwrap_or(&pictures[0]);
+
+            let data = picture.data();
+            let ext = match picture.mime_type() {
+                Some(lofty::picture::MimeType::Png) => "png",
+                Some(lofty::picture::MimeType::Bmp) => "bmp",
+                Some(lofty::picture::MimeType::Gif) => "gif",
+                Some(lofty::picture::MimeType::Tiff) => "tiff",
+                _ => "jpg", // fallback for Jpeg and others
+            };
+
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            let covers_dir = app_data_dir.join("covers");
+            if !covers_dir.exists() {
+                let _ = std::fs::create_dir_all(&covers_dir);
+            }
+
+            let filename = format!("{:016x}.{}", hash, ext);
+            let file_path = covers_dir.join(&filename);
+
+            if !file_path.exists() {
+                let _ = std::fs::write(&file_path, data);
+            }
+
+            cover_path = Some(file_path.to_string_lossy().to_string());
+        }
+    }
 
     // Extract audio properties
     let properties = tagged_file.properties();
@@ -128,7 +182,7 @@ fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
     let channels = properties.channels();
 
     let format = format_from_extension(path);
-    let file_path = path.to_string_lossy().to_string();
+    let file_path = normalize_path(path);
 
     Ok(ScannedTrack {
         title,
@@ -137,10 +191,12 @@ fn read_track_metadata(path: &Path) -> Result<ScannedTrack, String> {
         duration_seconds,
         file_path,
         track_number,
+        total_tracks,
         format,
         bitrate,
         sample_rate,
         bit_depth,
         channels,
+        cover_path,
     })
 }

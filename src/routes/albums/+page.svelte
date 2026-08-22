@@ -1,6 +1,7 @@
 <script lang="ts">
   import { albums } from '$lib/stores/library';
   import { Search, Bell, User, ChevronDown } from 'lucide-svelte';
+  import { goto } from '$app/navigation';
 
   let searchQuery = '';
 
@@ -50,8 +51,13 @@
   {#if filteredAlbums.length > 0}
     <div class="album-grid">
       {#each filteredAlbums as album (album.id)}
-        <button class="album-card">
+        {@const isSingle = album.totalTracks === null || album.totalTracks === 1}
+        {@const badgeText = isSingle ? 'SINGLE' : (album.locallyOwnedCount < (album.totalTracks || 0) ? `${album.locallyOwnedCount}/${album.totalTracks} TRACKS` : null)}
+        <button class="album-card" on:click={() => goto(`/albums/${album.id}`)}>
           <div class="card-cover">
+            {#if badgeText}
+              <div class="album-badge">{badgeText}</div>
+            {/if}
             {#if album.coverUrl}
               <img src={album.coverUrl} alt={album.title} class="cover-img" />
             {:else}
@@ -89,6 +95,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--gutter);
+    min-height: 40px;
   }
 
   .page-title {
@@ -216,19 +223,51 @@
     text-align: left;
     padding: 0;
     border-radius: var(--radius-default);
-    transition: background-color var(--transition-fast);
+    transition: all var(--transition-fast);
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    outline: none;
   }
 
   .album-card:hover .card-cover {
-    border-color: var(--color-outline-variant);
+    border-color: var(--color-primary);
+    transform: scale(1.02);
+  }
+  
+  .album-card:active .card-cover {
+    transform: scale(0.98);
   }
 
   .card-cover {
+    position: relative;
     aspect-ratio: 1;
     border-radius: var(--radius-default);
     overflow: hidden;
     border: 1px solid transparent;
     transition: border-color var(--transition-fast);
+  }
+
+  .album-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background-color: var(--color-surface-container-highest);
+    color: var(--color-on-surface-variant);
+    font-family: var(--font-mono-label-family);
+    font-size: var(--font-mono-label-size);
+    line-height: var(--font-mono-label-line-height);
+    letter-spacing: var(--font-mono-label-letter-spacing);
+    font-weight: var(--font-mono-label-weight);
+    padding: 4px 8px;
+    border-radius: var(--radius-pill);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    z-index: 1;
+    /* ensure it doesn't cramp */
+    max-width: calc(100% - 16px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .cover-img {

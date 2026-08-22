@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { fade } from 'svelte/transition';
+  import { fade, scale } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import {
     currentTrack,
     isPlaying,
@@ -18,7 +19,8 @@
     setPosition,
     formatTime,
     skipNext,
-    skipPrevious
+    skipPrevious,
+    play
   } from '$lib/stores/player';
   import { playlists } from '$lib/stores/library';
   import {
@@ -47,13 +49,8 @@
   let seekPosition = 0;
 
   $: displayedPosition = isDragging ? seekPosition : $positionSeconds;
-
-  // Watch for cover URL changes to extract color (avoid re-running on every track object reference change)
-  let lastExtractedCover: string | null | undefined = undefined;
-  $: if ($currentTrack?.coverUrl !== lastExtractedCover) {
-    lastExtractedCover = $currentTrack?.coverUrl;
-    extractColor($currentTrack?.coverUrl ?? null);
-  }
+  $: currentQueueIndex = $queue.findIndex(t => t.id === $currentTrack?.id);
+  $: upcomingQueue = currentQueueIndex >= 0 ? $queue.slice(currentQueueIndex + 1) : $queue;
 
   // Handle click outside for playlist popover
   function handleWindowClick(e: MouseEvent) {
@@ -62,50 +59,6 @@
       if (!target.closest('.playlist-action')) {
         isPlaylistPopoverOpen = false;
       }
-    }
-  }
-
-  async function extractColor(src: string | null) {
-    if (!src) {
-      ambientColor = 'var(--color-primary-container)';
-      return;
-    }
-
-    try {
-      const img = new Image();
-      img.crossOrigin = 'Anonymous';
-      img.src = src;
-      
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-      });
-
-      if (!canvasEl) return;
-      const ctx = canvasEl.getContext('2d');
-      if (!ctx) return;
-
-      canvasEl.width = img.width;
-      canvasEl.height = img.height;
-      ctx.drawImage(img, 0, 0);
-
-      // Simple average color sampling (stride by 40 pixels for speed)
-      const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height).data;
-      let r = 0, g = 0, b = 0, count = 0;
-      
-      for (let i = 0; i < imageData.length; i += 4 * 40) {
-        r += imageData[i];
-        g += imageData[i + 1];
-        b += imageData[i + 2];
-        count++;
-      }
-      
-      if (count > 0) {
-        ambientColor = `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
-      }
-    } catch (e) {
-      console.error('Failed to extract color', e);
-      ambientColor = 'var(--color-primary-container)';
     }
   }
 
@@ -142,9 +95,7 @@
 </script>
 
 {#if $isExpandedViewOpen}
-  <div class="expanded-overlay" transition:fade={{ duration: 200 }} style="--ambient-color: {ambientColor};">
-    <!-- Hidden canvas for color extraction -->
-    <canvas bind:this={canvasEl} style="display: none;"></canvas>
+  <div class="expanded-overlay" transition:scale={{ duration: 250, start: 0.96, easing: cubicOut }} style="--ambient-color: var(--color-ambient-wash, var(--color-primary-container));">
 
     <!-- Header -->
     <header class="overlay-header">
@@ -309,7 +260,7 @@
               <div class="queue-list">
                 <!-- Current Track (Highlighted) -->
                 {#if $currentTrack}
-                  <button class="queue-row active-row">
+                  <button class="queue-row active-row" on:click={togglePlay}>
                     <div class="queue-index">
                       <BarChart2 size={16} class="playing-icon" />
                     </div>
@@ -322,8 +273,8 @@
                 {/if}
                 
                 <!-- Queue Tracks -->
-                {#each $queue as track, i}
-                  <button class="queue-row">
+                {#each upcomingQueue as track, i}
+                  <button class="queue-row" on:click={() => play(track)}>
                     <div class="queue-index">{i + 1}</div>
                     <div class="queue-meta">
                       <span class="queue-title">{track.title}</span>
@@ -365,10 +316,11 @@
   /* ── Header ────────────────────────────────────────────────────── */
 
   .overlay-header {
-    padding: var(--gutter);
+    padding: calc(var(--titlebar-height, 32px) + var(--space-2)) var(--margin-md) var(--margin-md);
     display: flex;
     justify-content: flex-start;
     z-index: 2;
+    -webkit-app-region: drag; /* Let users drag the header */
   }
 
   .close-btn {
@@ -376,6 +328,7 @@
     padding: 8px;
     border-radius: 50%;
     transition: all var(--transition-fast);
+    -webkit-app-region: no-drag;
   }
 
   .close-btn:hover {
@@ -477,7 +430,7 @@
   }
 
   .control-btn.active {
-    color: var(--color-primary);
+    color: var(--color-primary-dynamic, var(--color-primary));
   }
 
   .play-wrapper {
@@ -504,18 +457,18 @@
     width: 64px;
     height: 64px;
     border-radius: 50%;
-    background-color: var(--color-primary-container);
+    background-color: var(--color-primary-container-dynamic, var(--color-primary-container));
     color: var(--color-on-primary-container);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1;
-    transition: transform var(--transition-fast), background-color var(--transition-fast);
+    transition: transform var(--transition-fast), background-color 400ms ease, color 400ms ease;
   }
 
   .play-btn:hover {
     transform: scale(1.05);
-    background-color: var(--color-primary);
+    background-color: var(--color-primary-dynamic, var(--color-primary));
     color: var(--color-on-primary);
   }
 
@@ -553,13 +506,14 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--color-primary);
+    background: var(--color-primary-dynamic, var(--color-primary));
     cursor: pointer;
     border: none;
+    transition: background-color 400ms ease;
   }
 
   .progress-slider::-webkit-slider-thumb:hover {
-    background: var(--color-primary-container);
+    background: var(--color-primary-container-dynamic, var(--color-primary-container));
     transform: scale(1.2);
   }
 
@@ -614,8 +568,8 @@
   }
 
   .action-btn.active {
-    color: var(--color-primary);
-    border-color: var(--color-primary);
+    color: var(--color-primary-dynamic, var(--color-primary));
+    border-color: var(--color-primary-dynamic, var(--color-primary));
   }
 
   .action-btn :global(.fill-current) {
@@ -698,8 +652,9 @@
   }
 
   .badge.filled {
-    background-color: var(--color-primary-container);
+    background-color: var(--color-primary-container-dynamic, var(--color-primary-container));
     color: var(--color-on-primary-container);
+    transition: background-color 400ms ease, color 400ms ease;
   }
 
   .badge.outline {
@@ -740,8 +695,8 @@
   }
 
   .tab-btn.active {
-    color: var(--color-primary);
-    border-bottom-color: var(--color-primary);
+    color: var(--color-primary-dynamic, var(--color-primary));
+    border-bottom-color: var(--color-primary-dynamic, var(--color-primary));
   }
 
   .tab-content {
@@ -772,6 +727,10 @@
     gap: var(--space-2);
     text-align: left;
     transition: background-color var(--transition-fast);
+    cursor: pointer;
+    width: 100%;
+    border: none;
+    background: transparent;
   }
 
   .queue-row:hover {
@@ -792,7 +751,8 @@
   }
 
   :global(.playing-icon) {
-    color: var(--color-primary);
+    color: var(--color-primary-dynamic, var(--color-primary));
+    transition: color 400ms ease;
   }
 
   .queue-meta {
@@ -813,7 +773,8 @@
   }
 
   .active-row .queue-title {
-    color: var(--color-primary);
+    color: var(--color-primary-dynamic, var(--color-primary));
+    transition: color 400ms ease;
   }
 
   .queue-artist {

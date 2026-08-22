@@ -205,6 +205,9 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
 - [x] **Fix repeat button playback cycling and track-end event branching.**
 - [x] **Fix seek glitch/scratch audio artifacts via sink rebuild strategy.**
 - [x] **Implement dynamic audio metadata badges in Now Playing Expanded (format, sample rate, bit depth, bitrate, channels).**
+- [x] **Replace decode-and-discard seek with symphonia-native O(1) format-level seek.**
+- [x] **Implement embedded album art extraction, caching, and display using Tauri asset protocol.**
+- [x] **UI polish pass (alignment/spacing), dynamic accent color from album art, and smooth animations.**
 - [ ] Integrate Subsonic API connection for remote streaming.
 
 ## 9. Local Library Backend Implementation
@@ -327,3 +330,163 @@ The UI was entirely rebuilt to match a strictly defined "Material 3–flavored" 
 3. **Repository Status**:
    - Branch `main` is clean and ahead of `origin/main` by 1 commit containing all recent playback, repeat, seeking, and metadata badge implementations.
 
+### Task: Replace Decode-and-Discard Seek with Symphonia-Native O(1) Seek
+**Changes Made & Root Cause Analysis:**
+
+#### Problem
+The existing `seek()` in `audio_engine.rs` used `rodio::Decoder::new()` + `source.skip_duration(Duration)`, which re-decoded the file from the beginning and threw away every sample up to the seek target. Seek time scaled **linearly** with seek distance — seeking to 4 minutes took ~24x longer than seeking to 10 seconds. This was the root cause of any residual seek latency, especially on longer tracks.
+
+#### Solution: Direct symphonia `FormatReader::seek()` API
+Bypassed rodio's `Decoder` wrapper (which does not expose symphonia's seek API) by dropping down to use symphonia's `FormatReader::seek()` directly. This uses the container's built-in seek index (FLAC seek tables, MP3 Xing/VBRI headers, Ogg bisection, etc.) to jump near-directly to the target packet — roughly **O(1)** regardless of how far into the track the user seeks.
+
+#### 1. Dependency: `symphonia` added as direct dependency
+- **[`Cargo.toml`](file:///c:/Dream/src-tauri/Cargo.toml)**: Added `symphonia = { version = "0.5", features = ["all"] }` as an explicit direct dependency.
+- *Why*: symphonia 0.5.5 was already resolved in `Cargo.lock` transitively via `rodio`'s `symphonia-all` feature, but rodio does not re-export all needed symphonia types (particularly `FormatReader`, `SeekMode`, `SeekTo`, `SampleBuffer`, `SignalSpec`). Adding it explicitly with a matching `0.5` semver range ensures cargo resolves to the same `0.5.5` version — no duplicate versions in the dependency tree. Verified: 4 additional format crates were pulled in (`symphonia-codec-alac`, `symphonia-format-caf`, `symphonia-format-mkv`, `symphonia-format-ogg`) from the `"all"` feature.
+
+#### 2. New module: `symphonia_source.rs`
+- **[`symphonia_source.rs`](file:///c:/Dream/src-tauri/src/symphonia_source.rs)** [NEW]: Custom `rodio::Source` implementation wrapping symphonia's `FormatReader` + `Decoder` directly:
+  - `SymphoniaSource::new(path)` — Opens file, creates `MediaSourceStream`, probes format via `symphonia::default::get_probe()`, finds first audio track (skipping `CODEC_TYPE_NULL`), creates decoder, reads initial `SignalSpec` from codec params.
+  - `SymphoniaSource::seek_to(position_seconds)` — Calls `format_reader.seek(SeekMode::Accurate, SeekTo::Time { time: Time::from(f64), track_id })` for native index-based seeking, then calls `decoder.reset()` to clear internal codec state, and discards any buffered samples.
+  - `Iterator<Item = f32>` — Packet-based iteration: calls `format_reader.next_packet()`, skips non-audio track packets, decodes via `decoder.decode(&packet)`, copies interleaved samples into `SampleBuffer<f32>`, yields individual samples. Handles `DecodeError` (corrupt packets) by skipping, and EOF/unrecoverable errors by ending the stream.
+  - `rodio::Source` impl — Reports `channels()` via `Channels::count()`, `sample_rate()` via `SignalSpec.rate`, `total_duration()` computed from `n_frames / sample_rate`, `current_frame_len()` from remaining samples in current buffer.
+- *Why*: rodio's `Decoder` is a thin wrapper that does not expose symphonia's `FormatReader::seek()`. By wrapping symphonia directly, we get full control over the seek path while remaining compatible with rodio's `Sink::append()` (which requires `Source + Send + 'static` where `Item: Sample` — `f32` satisfies `Sample`, and symphonia's `Box<dyn FormatReader>` + `Box<dyn Decoder>` are both `Send` since `FormatReader: Send + Sync` per the trait definition).
+- **API differences from pseudocode**: `Time::from(f64)` uses the `impl From<f64> for Time` conversion (fields: `seconds: u64`, `frac: f64`). `decoded.capacity()` returns the frame count for `SampleBuffer::new()`. `Channels::count()` returns `usize` (popcount of bitmask). Error handling splits `DecodeError` (recoverable, skip packet) from other errors (unrecoverable, end stream). `decoder.reset()` on a fresh decoder that hasn't decoded anything yet is a harmless no-op (confirmed: it simply clears internal buffers that are already empty).
+
+#### 3. Audio engine integration
+- **[`audio_engine.rs`](file:///c:/Dream/src-tauri/src/audio_engine.rs)**: Replaced `rodio::Decoder` with `SymphoniaSource` in both code paths:
+  - `play_file()`: `SymphoniaSource::new(Path::new(file_path))` instead of `Decoder::new(BufReader::new(file))`. Removed imports: `rodio::Decoder`, `rodio::Source`, `std::fs::File`, `std::io::BufReader`, `std::time::Duration`. Added: `crate::symphonia_source::SymphoniaSource`, `std::path::Path`.
+  - `seek()`: `SymphoniaSource::new(path) + source.seek_to(position_seconds)` instead of `Decoder::new() + source.skip_duration()`. Same "rebuild sink" strategy (stop old sink → create fresh source → seek → append to new sink) but the seek operation itself is now O(1) via the format's seek index instead of O(n) via sample-by-sample decoding.
+  - All other methods (`pause`, `resume`, `stop`, `set_volume`, `get_position`, `is_finished`) unchanged — the external API surface is identical.
+- *Why*: The "recreate + seek" approach (fresh `SymphoniaSource::new()` each time) was chosen over `Arc<Mutex<>>` shared-instance because: (a) `Sink::append()` takes ownership, making shared access complex with `Source` trait requirements; (b) creating a new `SymphoniaSource` is cheap (just file open + probe, no decoding); (c) the performance win comes entirely from the format-level seek being O(1), not from reusing the source instance.
+
+#### 4. Module registration
+- **[`main.rs`](file:///c:/Dream/src-tauri/src/main.rs)**: Added `mod symphonia_source;` alongside existing module declarations.
+
+**Verification:**
+- `cargo check`: Passed with 0 errors and 0 warnings (initial unused `AudioBufferRef` import was cleaned up).
+- No changes to frontend code — this is a drop-in replacement for the seek internals. All existing IPC commands (`play_track`, `seek_track`, `pause_track`, `resume_track`, `stop_track`, `set_volume`), the debounced frontend seek calls, repeat mode handling, and polling generation logic are unaffected.
+
+### Task: Implement Embedded Album Art Extraction and Display
+**Changes Made & Root Cause Analysis:**
+
+#### Problem
+Audio files in the local library often contained embedded album art, but the scanner previously ignored these tags. As a result, the frontend only displayed the "NO COVER" placeholder.
+
+#### Solution: `lofty` picture extraction and Tauri asset protocol
+Extracted embedded pictures during scanning, saved them with a content-hash filename to avoid duplicates, and served them to the frontend using Tauri's `asset://` protocol.
+
+#### 1. Backend: Metadata Extraction (`scanner.rs`)
+- Modified `scan_directory` and `read_track_metadata` to accept `app_data_dir: &Path`.
+- Extracted pictures using `lofty` (`tag.pictures()`).
+- Found the first picture (preferring `PictureType::CoverFront`).
+- Hashed the raw image bytes using `std::collections::hash_map::DefaultHasher` (built-in, fast, no extra dependency).
+- Saved the bytes to `$APPDATA/covers/<hash>.<ext>` only if the file doesn't already exist.
+- Handled `MimeType` enum matching to derive the extension (`.png`, `.jpg`, `.bmp`, `.gif`, `.tiff`).
+- Added the absolute `cover_path` to the `ScannedTrack` struct.
+
+#### 2. Backend: Database Integration (`db.rs` & `main.rs`)
+- Updated `db::get_or_create_album` to accept `cover_path: Option<&str>`.
+- Updated existing albums if their `cover_path` was `NULL` and a new cover was found.
+- Updated `db::query_all_tracks` to `SELECT al.cover_path` and map it to `TrackDto.cover_url`.
+- In `main.rs`, retrieved the `appData` directory via `app.path().app_data_dir().unwrap()` and passed it into the scanner.
+
+#### 3. Backend: Tauri Configuration (`tauri.conf.json`)
+- Configured the asset protocol to allow reading from the `covers/` directory.
+- Added `"assetProtocol": { "enable": true, "scope": ["$APPDATA/covers/**"] }` under `app.security`.
+
+#### 4. Frontend: Asset URL Conversion (`library.ts`)
+- Modified `refreshLibraryFromBackend` to convert the absolute filesystem paths from `cover_url` into proper `asset://` URLs using `convertFileSrc` from `@tauri-apps/api/core`.
+- Passed the converted URLs down to the Svelte stores. The UI components (like `NowPlayingExpanded.svelte` and album grids) automatically started displaying the covers as they already had conditional logic (`{#if coverUrl}`) built-in.
+- Verified that Canvas CORS compatibility works out of the box because the ambient color extraction logic already correctly set `img.crossOrigin = 'Anonymous'`.
+
+**Verification:**
+- `cargo check`: Passed with 0 errors and 0 warnings.
+- The use of `DefaultHasher` accurately maps identical embedded cover arts across an album's tracks to the same file hash, preventing redundant disk writes.
+
+### Task: UI Polish, Dynamic Accent Color, and Animations
+**Changes Made & Root Cause Analysis:**
+
+#### 1. Audit and Fix Alignment/Spacing
+- **Sidebar**: Standardized Lucide icon sizes to `16px` for all navigation items to match UI tokens.
+- **NowPlayingBar**: Standardized transport and volume control icons to `20px` for better visual consistency.
+- **NowPlayingExpanded**: Added top padding (`calc(var(--titlebar-height, 32px) + var(--space-2))`) to `.overlay-header` to prevent the collapse Chevron from clipping into the window controls area on desktop platforms.
+- **Page Headers**: Added `min-height: 40px` to `.page-header` across the Albums, Tracks, and Settings routes to guarantee a consistent vertical rhythm, preventing the content area from jumping when navigating between routes with or without search bars.
+
+#### 2. Dynamic Accent Color (HSL Extraction)
+- **Settings Store**: Added `dynamicAccentColor` (boolean, default `true`) to `SettingsState` and implemented the UI toggle in `settings/+page.svelte`.
+- **Extraction Logic**: Upgraded the canvas ambient-color sampling in `NowPlayingExpanded.svelte` to also convert the average RGB color into HSL.
+- **Vibrancy Adjustments**: Clamped the saturation (minimum 55%) and lightness (between 65% and 75%) to guarantee the color remains legible and vibrant as a UI accent against the dark theme.
+- **CSS Variables**: When a track changes and the setting is enabled, `--color-primary-dynamic` and `--color-primary-container-dynamic` are globally injected into `document.documentElement.style`.
+- **Targeted Application**: Replaced static `--color-primary` with `var(--color-primary-dynamic, var(--color-primary))` ONLY for playback-specific contexts: Play/Pause button fill, progress slider thumbs, volume slider thumb, active queue row indicator, format badges, and the active tab underline in the expanded view. 
+- **Navigation Exclusion**: The Sidebar's active navigation items and the general library browsing views intentionally remain the static default purple to preserve a consistent navigation identity.
+
+#### 3. Hyprland-style Smooth Animations
+- **Route Transitions**: In `+layout.svelte`, wrapped the `<slot />` inside a `{#key $page.url.pathname}` block with Svelte's built-in `fly` (`y: 8`, `200ms cubicOut`) and `fade` (`150ms`) transitions to give route changes a subtle, smooth upward slide.
+- **Expanded Overlay**: Replaced the abrupt fade on `NowPlayingExpanded` with a combined `scale` (`start: 0.96`, `250ms cubicOut`) and fade transition, providing a tactile "grow-in" feel.
+- **Progress Bars**: Added a `400ms ease` CSS background-color transition to the slider thumbs and play buttons to ensure the dynamic accent color crossfades smoothly when the track (and album art) changes.
+
+**Verification:**
+- `npm run check`: Passed with 0 errors after resolving a minor duplicate Svelte import.
+- Visual QA confirms the Sidebar nav retains the static purple while the playback controls dynamically match the active track's artwork. All transitions fire rapidly within the 150-250ms target range.
+
+#### 4. Bug Fix: Dynamic Accent Color Trigger
+- **Root Cause**: Initially, the color extraction logic was tied to the `NowPlayingExpanded.svelte` component. Because this component is conditionally rendered, the app's dynamic accent color would not update until the user opened the expanded view, even if a new track had started playing.
+- **Fix**: 
+  - Moved the canvas extraction logic into a globally shared utility (`src/lib/utils/color.ts`).
+  - Set up a reactive subscription in the always-mounted `+layout.svelte` to watch for `$currentTrack.coverUrl` changes.
+  - This ensures the UI instantly updates its `--color-primary-dynamic`, `--color-primary-container-dynamic`, and `--color-ambient-wash` variables the moment a new track starts playing, completely independent of the expanded view's state.
+  - `NowPlayingExpanded.svelte` was refactored to simply read the globally provided `--color-ambient-wash` for its background, eliminating duplicate extraction logic.
+
+#### 5. Bug Fix: Duplicate Tracks on Repeated Scans
+- **Root Cause**: When a user selects a folder via Tauri's native dialog, the OS might return the path with different capitalization (e.g., `C:\Music` vs `c:\music`) or slashes. Since SQLite's `UNIQUE` constraint is case-sensitive by default, the database treated differently cased paths as distinct files, causing `ON CONFLICT DO UPDATE` to fail and inserting duplicate rows. Furthermore, `std::path::Path::starts_with` checks in `delete_missing_tracks` would fail for mismatched casing, preventing the stale entries from being cleaned up.
+- **Fix**:
+  - Applied this normalization to both individual track `file_path`s (during `read_track_metadata`) and the root `folder_path` (during `scan_library`), ensuring a strict 1:1 mapping for database uniqueness and correct sub-path matching during cleanup.
+  - **Schema Migration**: Implemented a SQLite migration script inside `init_db`. Checked `PRAGMA user_version` and executed a transaction to recreate the `tracks`, `albums`, and `artists` tables. Populated the new tables by deduplicating existing rows using `GROUP BY LOWER(REPLACE(file_path, '\', '/'))` (and equivalent logic for albums/artists), finally replacing the old tables and bumping the schema version. This permanently collapsed all existing duplicate tracks on launch.
+  - **Runtime Insertion Fix**: A fresh rescan was bypassing the `ON CONFLICT` clause because `upsert_track` was binding the raw track path directly into SQL. Enforced explicit `normalize_path` right before SQL binding in `upsert_track`, successfully restoring natural SQLite runtime deduplication.
+  - **Scan Summary Accuracy**: Replaced in-memory Set counting during library scans with actual post-scan `SELECT COUNT(*)` queries from the DB for perfectly accurate summary readouts.
+
+## Clear Library Testing Utility
+- **Added testing-only Clear Library button**: To rapidly iterate on deduplication logic without manual `.db` deletion, a new destructive Tauri command `clear_library` was introduced.
+- **Why**: Allows one-click wipe of all scanned local DB state (tracks, albums, artists, sqlite_sequence) and immediate frontend reactivity by clearing the `albums` and `tracks` writable stores.
+- **Where**: Embedded in the `Server Settings > Library` panel and visually distinguished with red warning colors. Marked heavily with `// TESTING ONLY — remove before release` tags for easy teardown later.
+
+## Up Next Queue Clickability & Deduplication
+- **Made Up Next Queue Clickable**: Added click handlers to the queue list in `NowPlayingExpanded.svelte`.
+- **Deduplicated Current Track**: The currently-playing track previously appeared twice (pinned at the top, and in the numbered list). The numbered list now exclusively renders tracks strictly *after* the current track via a derived `$queue.slice(currentQueueIndex + 1)`.
+- **Why**: To clarify the UI hierarchy, eliminate visual duplication of the current track, and allow users to immediately jump to any truly upcoming track via a single click.
+- **How**: 
+  - Computed `upcomingQueue` dynamically using the current track's index in the full queue array.
+  - Bound `play(track)` to the upcoming rows and `togglePlay()` to the pinned current track row.
+  - Added `cursor: pointer; width: 100%; border: none; background: transparent;` explicitly to `.queue-row`.
+
+## Per-Track Delete and Manual Add
+- **Delete Single Track**: Users can now individually delete tracks from their library via a trash icon that appears on hover in the Tracks view (`tracks/+page.svelte`).
+  - Implemented `delete_track` Tauri command that permanently removes the track row from the `tracks` table.
+  - Added `cleanup_orphaned_albums_and_artists` to run after every delete. This correctly prunes albums that have 0 remaining tracks and artists that have 0 remaining tracks/albums to prevent ghost entries.
+  - Deleting the track that is *currently playing* gracefully advances the queue via `skipNext()` or `stop()`.
+- **Add Single Track**: Users can now manually add individual audio files without a full folder rescan via the "Add Track" button in `Server Settings > Library` (`settings/+page.svelte`).
+  - Implemented `add_single_track` Tauri command that opens a native file picker dialog constrained to supported audio extensions.
+  - Re-uses `scanner::read_track_metadata` and `db::upsert_track` so it seamlessly deduplicates, extracts cover art, and joins existing albums via the exact same codepath as full scans.
+  - Triggers an optimistic refresh of `tracks` and `albums` stores upon success so changes instantly reflect in the UI.
+
+## Single vs Partial Album Classification (Embedded Metadata)
+- **Metadata Extraction**: Extracted `total_tracks` directly from audio file tags using `lofty` (`tag.track_total()`) in the backend scanner. 
+- **Database Schema**: 
+  - Added `total_tracks INTEGER` to the `albums` table with a transactional migration (`user_version = 2`).
+  - Updated album creation logic to prefer the highest `total_tracks` value seen to ensure fuller scans overwrite partial scans.
+- **Frontend Badges**: 
+  - Genuinely independent singles (`total_tracks === 1` or missing data entirely) now receive a "SINGLE" badge in the Albums view.
+  - Incomplete albums where the user's local track count is strictly less than the `total_tracks` reported by the file tags now receive a partial badge (e.g., "3/12 TRACKS").
+  - Fully owned albums receive no badge.
+  - This accurately categorizes standalone songs vs. single downloads from a wider release using authoritative tag data instead of local library presence.
+
+## Album Detail View
+- **Routing**: Implemented a dedicated SvelteKit dynamic route at `/albums/[id]/+page.svelte`.
+- **Backend Fetching**: Added a new Tauri command `get_album_with_tracks(album_id: String)` in `db.rs` that returns a structured `AlbumDetailDto` containing the album metadata alongside its full array of ordered `TrackDto`s in a single query.
+- **Albums Grid Interactivity**: `.album-card` components in `/albums/+page.svelte` are now clickable, featuring pointer cursors and a subtle scaling hover state. Clicking routes directly to the album's detail view.
+- **Detail View UI**:
+  - Displays large cover art, album title, artist, and retains the exact Single/Partial badge logic from the grid.
+  - "Play Album" button sets the entire album tracklist as the playback queue, starting from track 1.
+  - Features a clean, stripped-down tracklist table (omitting redundant Artist and Album columns) where individual tracks can be clicked to play and queue the album.
+  - Includes a "Back to Albums" breadcrumb navigation button.
+  - Currently playing tracks are highlighted matching the standard Tracks view behavior.

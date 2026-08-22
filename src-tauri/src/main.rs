@@ -6,6 +6,7 @@
 mod db;
 mod scanner;
 mod audio_engine;
+mod symphonia_source;
 
 use audio_engine::AudioEngine;
 
@@ -49,9 +50,11 @@ async fn scan_library(
     // Run the blocking file system and database operations in a separate thread
     tauri::async_runtime::spawn_blocking(move || {
         let path = Path::new(&folder_path);
+        let normalized_folder_path = scanner::normalize_path(&path);
+        let app_data_dir = app.path().app_data_dir().unwrap();
 
         // Step 1: Scan the directory for audio files
-        let scan_result = scanner::scan_directory(path)?;
+        let scan_result = scanner::scan_directory(path, &app_data_dir)?;
 
         // Step 2: Persist results to the database
         let db_state = app.state::<DbState>();
@@ -70,7 +73,7 @@ async fn scan_library(
             let album_id = match &track.album {
                 Some(album_title) => {
                     // Note: This relies on the SELECT logic in get_or_create_album or handles constraint errors.
-                    let aid = db::get_or_create_album(&conn, album_title, &artist_id)?;
+                    let aid = db::get_or_create_album(&conn, album_title, &artist_id, track.cover_path.as_deref(), track.total_tracks)?;
                     albums_seen.insert(aid.clone());
                     Some(aid)
                 }
@@ -83,20 +86,74 @@ async fn scan_library(
         }
 
         // Step 3: Remove missing tracks from this folder
-        db::delete_missing_tracks(&conn, &folder_path, &kept_file_paths)?;
+        db::delete_missing_tracks(&conn, &normalized_folder_path, &kept_file_paths)?;
 
         // Step 4: Record the scan folder
-        db::upsert_scan_folder(&conn, &folder_path)?;
+        db::upsert_scan_folder(&conn, &normalized_folder_path)?;
+
+        // Step 5: Compute true counts from the database
+        let tracks_count: u32 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0)).unwrap_or(0);
+        let albums_count: u32 = conn.query_row("SELECT COUNT(*) FROM albums", [], |r| r.get(0)).unwrap_or(0);
+        let artists_count: u32 = conn.query_row("SELECT COUNT(*) FROM artists", [], |r| r.get(0)).unwrap_or(0);
 
         Ok(ScanSummary {
-            tracks_found: scan_result.tracks.len() as u32,
+            tracks_found: tracks_count,
             tracks_skipped: scan_result.skipped.len() as u32,
-            albums_found: albums_seen.len() as u32,
-            artists_found: artists_seen.len() as u32,
+            albums_found: albums_count,
+            artists_found: artists_count,
         })
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Open a native file picker, extract metadata, and insert a single track into the DB.
+#[tauri::command]
+async fn add_single_track(app: tauri::AppHandle) -> Result<Option<TrackDto>, String> {
+    let file = app.dialog().file()
+        .add_filter("Audio", &["mp3", "flac", "wav", "m4a", "ogg"])
+        .blocking_pick_file();
+
+    let path = match file {
+        Some(p) => p.into_path().unwrap(),
+        None => return Ok(None),
+    };
+
+    let app_data_dir = app.path().app_data_dir().unwrap();
+    let track = scanner::read_track_metadata(&path, &app_data_dir)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_state = app.state::<DbState>();
+        let conn = db_state.0.lock().map_err(|e| format!("DB lock error: {}", e))?;
+
+        let artist_id = db::get_or_create_artist(&conn, &track.artist)?;
+        let album_id = match &track.album {
+            Some(album_title) => {
+                Some(db::get_or_create_album(&conn, album_title, &artist_id, track.cover_path.as_deref(), track.total_tracks)?)
+            }
+            None => None,
+        };
+
+        let track_id = db::upsert_track(&conn, &track, &artist_id, album_id.as_deref())?;
+        
+        db::query_track_by_id(&conn, &track_id)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+// TESTING ONLY — remove before release
+#[tauri::command]
+fn clear_library(db_state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "DELETE FROM tracks;
+         DELETE FROM albums;
+         DELETE FROM artists;
+         DELETE FROM sqlite_sequence WHERE name IN ('tracks','albums','artists');"
+    ).unwrap_or(()); // Tolerate sqlite_sequence missing
+    println!("[testing] Library cleared: tracks, albums, artists wiped.");
+    Ok(())
 }
 
 /// Query all albums from the local database.
@@ -105,6 +162,14 @@ async fn get_all_albums(app: tauri::AppHandle) -> Result<Vec<AlbumDto>, String> 
     let db_state = app.state::<DbState>();
     let conn = db_state.0.lock().map_err(|e| format!("DB lock error: {}", e))?;
     db::query_all_albums(&conn)
+}
+
+/// Query a single album with its full tracklist.
+#[tauri::command]
+async fn get_album_with_tracks(app: tauri::AppHandle, album_id: String) -> Result<db::AlbumDetailDto, String> {
+    let db_state = app.state::<DbState>();
+    let conn = db_state.0.lock().map_err(|e| format!("DB lock error: {}", e))?;
+    db::get_album_with_tracks(&conn, &album_id)
 }
 
 /// Query all tracks from the local database.
@@ -288,8 +353,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pick_music_folder,
             scan_library,
+            add_single_track,
+            db::delete_track,
+            clear_library, // TESTING ONLY
             get_all_albums,
             get_all_tracks,
+            get_album_with_tracks,
             play_track,
             pause_track,
             resume_track,
